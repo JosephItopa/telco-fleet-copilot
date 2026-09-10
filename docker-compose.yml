@@ -1,0 +1,36 @@
+services:
+  api-service:
+    build: ./services/api-service
+    ports:
+      - "8000:8000"
+    environment:
+      PAYMENT_SERVICE_URL: http://payment-service:8001
+    depends_on:
+      - payment-service
+
+  payment-service:
+    build: ./services/payment-service
+    ports:
+      - "8001:8001"
+
+  aiops-controller:
+    build: ./aiops-controller
+    ports:
+      - "9000:9000"
+    environment:
+      API_SERVICE_URL: http://api-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8001
+    depends_on:
+      - api-service
+      - payment-service
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api-service
+      - payment-service
+      - aiops-controller
