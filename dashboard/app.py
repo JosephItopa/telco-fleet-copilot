@@ -110,31 +110,37 @@ def _render_ai(finding: dict) -> None:
 
     st.subheader("AI analysis and recommendation")
     if status == "pending":
-        st.info("Reasoning in progress. The async worker is calling the LLM.")
-        return
-    if status == "failed":
+        st.info(
+            "Reasoning in progress. The async worker is calling the LLM. "
+            "Any response received so far is shown below."
+        )
+    elif status == "failed":
         st.warning(f"LLM reasoning failed; deterministic recommendation shown. Error: {ai.get('error')}")
     elif status == "skipped":
         st.info("Below the reasoning severity threshold; deterministic recommendation attached.")
 
-    if ai.get("summary"):
-        st.markdown(f"**Summary.** {ai['summary']}")
-    if ai.get("root_cause"):
-        st.markdown(f"**Likely root cause.** {ai['root_cause']}")
-    if ai.get("remediation_steps"):
-        st.markdown("**Recommended remediation steps**")
-        for index, step in enumerate(ai["remediation_steps"], start=1):
-            st.markdown(f"{index}. {step}")
-    if ai.get("risk"):
-        st.markdown(f"**Risk of acting.** {ai['risk']}")
+    has_content = any(ai.get(field) for field in ("summary", "root_cause", "remediation_steps", "risk"))
+    if has_content:
+        if ai.get("summary"):
+            st.markdown(f"**Summary.** {ai['summary']}")
+        if ai.get("root_cause"):
+            st.markdown(f"**Likely root cause.** {ai['root_cause']}")
+        if ai.get("remediation_steps"):
+            st.markdown("**Recommended remediation steps**")
+            for index, step in enumerate(ai["remediation_steps"], start=1):
+                st.markdown(f"{index}. {step}")
+        if ai.get("risk"):
+            st.markdown(f"**Risk of acting.** {ai['risk']}")
 
-    confidence = ai.get("confidence")
-    if confidence is not None:
-        st.progress(min(1.0, max(0.0, float(confidence))), text=f"Confidence: {float(confidence):.0%}")
-    st.caption(
-        f"provider={ai.get('provider')} model={ai.get('model')} "
-        f"latency={ai.get('latency_seconds')}s generated_at={ai.get('generated_at')}"
-    )
+        confidence = ai.get("confidence")
+        if confidence is not None and status != "pending":
+            st.progress(min(1.0, max(0.0, float(confidence))), text=f"Confidence: {float(confidence):.0%}")
+        st.caption(
+            f"provider={ai.get('provider')} model={ai.get('model')} "
+            f"latency={ai.get('latency_seconds')}s generated_at={ai.get('generated_at')}"
+        )
+    elif status == "pending":
+        st.caption("No recommendation text has been returned yet.")
 
     if st.button("Re-analyze with LLM", key=f"reanalyze-{finding['incident_id']}"):
         try:

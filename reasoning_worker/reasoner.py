@@ -35,6 +35,7 @@ def _client() -> AsyncOpenAI | None:
         api_key=config.NVIDIA_API_KEY,
         base_url=config.NVIDIA_BASE_URL,
         timeout=config.LLM_TIMEOUT_SECONDS,
+        max_retries=0,
     )
 
 
@@ -103,16 +104,19 @@ async def analyze(finding: Finding) -> AIAnalysis:
     for attempt in range(1, config.LLM_RETRIES + 1):
         started = time.perf_counter()
         try:
-            completion = await client.chat.completions.create(
-                model=config.NVIDIA_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_prompt(finding)},
-                ],
-                temperature=config.LLM_TEMPERATURE,
-                top_p=config.LLM_TOP_P,
-                max_tokens=config.LLM_MAX_TOKENS,
-                stream=False,
+            completion = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=config.NVIDIA_MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": build_prompt(finding)},
+                    ],
+                    temperature=config.LLM_TEMPERATURE,
+                    top_p=config.LLM_TOP_P,
+                    max_tokens=config.LLM_MAX_TOKENS,
+                    stream=False,
+                ),
+                timeout=config.LLM_TIMEOUT_SECONDS,
             )
             content = completion.choices[0].message.content or ""
             data = extract_json(content)
