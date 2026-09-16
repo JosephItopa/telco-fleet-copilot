@@ -89,6 +89,10 @@ streamlit run dashboard/app.py
    as executed. If the LLM fails, a deterministic catalog recommendation is used.
 6. The dashboard reads the worker's `/findings` and `/summary` and renders the
    fleet view, per-cluster breakdown, evidence, and the AI recommendation.
+7. Operators select a row in the findings table to see its analysis, then use the
+   **Move selected row to fixed records** button to flag it as fixed. The finding
+   moves to the **Fixed records** table at the bottom of the dashboard, where it can
+   be reopened and sent back to the active findings table.
 
 ## Endpoints
 
@@ -97,7 +101,8 @@ Detector (9000): `GET /`, `GET /health`, `GET /status`, `POST /analyze`,
 
 Reasoning worker (9100): `GET /`, `GET /health`, `GET /status`, `GET /summary`,
 `POST /findings`, `GET /findings`, `GET /findings/{id}`,
-`POST /findings/{id}/reanalyze`.
+`POST /findings/{id}/reanalyze`, `POST /findings/{id}/resolve`,
+`POST /findings/{id}/reopen`.
 
 ## Notes and limitations
 

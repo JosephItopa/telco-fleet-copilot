@@ -25,6 +25,15 @@ def _get(base: str, path: str, params: dict[str, Any] | None = None) -> dict[str
         raise ServiceError(f"{base}{path}: {exc}") from exc
 
 
+def _post(base: str, path: str) -> dict[str, Any]:
+    try:
+        response = requests.post(f"{base}{path}", timeout=TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as exc:
+        raise ServiceError(f"{base}{path}: {exc}") from exc
+
+
 def get_status() -> dict[str, Any]:
     return _get(WORKER_URL, "/status")
 
@@ -43,12 +52,17 @@ def get_findings(severity: str | None = None, kind: str | None = None, limit: in
 
 
 def reanalyze(incident_id: str) -> dict[str, Any]:
-    try:
-        response = requests.post(f"{WORKER_URL}/findings/{incident_id}/reanalyze", timeout=TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as exc:
-        raise ServiceError(f"reanalyze {incident_id}: {exc}") from exc
+    return _post(WORKER_URL, f"/findings/{incident_id}/reanalyze")
+
+
+def resolve(incident_id: str) -> dict[str, Any]:
+    """Flag a finding as fixed."""
+    return _post(WORKER_URL, f"/findings/{incident_id}/resolve")
+
+
+def reopen(incident_id: str) -> dict[str, Any]:
+    """Undo the fixed flag on a finding."""
+    return _post(WORKER_URL, f"/findings/{incident_id}/reopen")
 
 
 def detector_status() -> dict[str, Any] | None:

@@ -49,6 +49,8 @@ class FindingStore:
         async with self._lock:
             candidates = list(self._items.values())
         for item in candidates:
+            if item.status == "RESOLVED":
+                continue
             if (item.target, item.kind, item.cluster, item.anomaly) != signature:
                 continue
             age = _age_seconds(item.created_at)

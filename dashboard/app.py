@@ -177,51 +177,29 @@ def _render_detail(finding: dict) -> None:
         _render_ai(finding)
 
 
-def _render_content() -> None:
-    try:
-        status = api.get_status()
-        detector = api.detector_status()
-        severity_param = ",".join(severities) if severities else None
-        kind_param = None if kind_label == "all" else kind_label
-        findings = api.get_findings(severity=severity_param, kind=kind_param)
-    except api.ServiceError as exc:
-        st.error(f"Could not reach the reasoning worker: {exc}")
-        st.info("Start the prototype with `docker compose up --build`, or run the services locally.")
-        return
+def _bump_table() -> None:
+    """Reset the tables so a moved row does not leave a stale selection behind."""
+    st.session_state["table_version"] = st.session_state.get("table_version", 0) + 1
 
-    _render_source_banners(findings, status, detector)
-    _render_detector_info(detector)
 
-    counts = _severity_counts(findings)
-    kpis = st.columns(5)
-    kpis[0].metric("Findings", len(findings))
-    kpis[1].metric("Critical", counts.get("critical", 0))
-    kpis[2].metric("High", counts.get("high", 0))
-    kpis[3].metric("Medium", counts.get("medium", 0))
-    kpis[4].metric("Reasoning queue", status.get("queue_size", 0))
+def _table_version() -> int:
+    return st.session_state.get("table_version", 0)
 
-    if not findings:
-        st.info("No findings for the current filters. Use 'Run detector now' to trigger an analysis.")
-        return
 
-    chart_cols = st.columns(2)
-    with chart_cols[0]:
-        st.subheader("Findings by severity")
-        sev_df = pd.DataFrame(
-            {"severity": SEVERITY_ORDER, "count": [counts.get(level, 0) for level in SEVERITY_ORDER]}
-        )
-        st.bar_chart(sev_df, x="severity", y="count")
-    with chart_cols[1]:
-        st.subheader("Findings by cluster")
-        cluster_counts: dict[str, int] = {}
-        for finding in findings:
-            key = finding.get("cluster") or "unassigned"
-            cluster_counts[key] = cluster_counts.get(key, 0) + 1
-        cluster_df = pd.DataFrame(sorted(cluster_counts.items()), columns=["cluster", "count"])
-        st.bar_chart(cluster_df, x="cluster", y="count")
+def _selected_incident_id(rows: pd.DataFrame, event) -> str | None:
+    selected = event.selection.rows if event and event.selection else []
+    if not selected:
+        return None
+    return str(rows.iloc[selected[0]]["incident_id"])
 
+
+def _render_active_table(active: list[dict]) -> None:
     st.subheader("Findings")
-    table = pd.DataFrame(
+    if not active:
+        st.success("No active findings for the current filters.")
+        return
+
+    rows = pd.DataFrame(
         [
             {
                 "incident_id": finding["incident_id"],
@@ -235,22 +213,139 @@ def _render_content() -> None:
                 "ai": finding.get("ai", {}).get("status"),
                 "created_at": finding["created_at"],
             }
-            for finding in findings
+            for finding in active
         ]
     )
     event = st.dataframe(
-        table,
+        rows,
         hide_index=True,
         width="stretch",
         on_select="rerun",
         selection_mode="single-row",
+        key=f"active-findings-table-{_table_version()}",
     )
+    incident_id = _selected_incident_id(rows, event)
 
-    selected_rows = event.selection.rows if event and event.selection else []
-    if selected_rows:
-        _render_detail(findings[selected_rows[0]])
-    else:
-        st.caption("Select a row to see evidence and the AI recommendation.")
+    move_clicked = st.button(
+        "Move selected row to fixed records",
+        disabled=incident_id is None,
+        key="move-selected-to-fixed",
+    )
+    if move_clicked and incident_id:
+        try:
+            api.resolve(incident_id)
+            _bump_table()
+            st.success(f"{incident_id} moved to Fixed records.")
+            st.rerun()
+        except api.ServiceError as exc:
+            st.error(str(exc))
+
+    if incident_id is None:
+        st.caption("Select a row to see its evidence and AI analysis, then move it to Fixed records.")
+        return
+
+    finding = next(item for item in active if item["incident_id"] == incident_id)
+    _render_detail(finding)
+
+
+def _render_fixed_table(fixed: list[dict]) -> None:
+    st.divider()
+    st.subheader("Fixed records")
+    if not fixed:
+        st.caption("No findings have been flagged as fixed yet.")
+        return
+
+    rows = pd.DataFrame(
+        [
+            {
+                "incident_id": finding["incident_id"],
+                "severity": finding["severity"],
+                "kind": finding["kind"],
+                "target": finding["target"],
+                "cluster": finding.get("cluster"),
+                "anomaly": finding["anomaly"],
+                "fixed_at": finding.get("resolved_at"),
+                "created_at": finding["created_at"],
+            }
+            for finding in fixed
+        ]
+    )
+    event = st.dataframe(
+        rows,
+        hide_index=True,
+        width="stretch",
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"fixed-records-table-{_table_version()}",
+    )
+    incident_id = _selected_incident_id(rows, event)
+
+    reopen_clicked = st.button(
+        "Reopen selected record",
+        disabled=incident_id is None,
+        key="reopen-selected-record",
+    )
+    if reopen_clicked and incident_id:
+        try:
+            api.reopen(incident_id)
+            _bump_table()
+            st.success(f"{incident_id} moved back to active findings.")
+            st.rerun()
+        except api.ServiceError as exc:
+            st.error(str(exc))
+
+    st.caption(f"{len(fixed)} record(s) flagged as fixed.")
+
+
+def _render_content() -> None:
+    try:
+        status = api.get_status()
+        detector = api.detector_status()
+        severity_param = ",".join(severities) if severities else None
+        kind_param = None if kind_label == "all" else kind_label
+        findings = api.get_findings(severity=severity_param, kind=kind_param)
+    except api.ServiceError as exc:
+        st.error(f"Could not reach the reasoning worker: {exc}")
+        st.info("Start the prototype with `docker compose up --build`, or run the services locally.")
+        return
+
+    active = [finding for finding in findings if finding["status"] != "RESOLVED"]
+    fixed = [finding for finding in findings if finding["status"] == "RESOLVED"]
+
+    _render_source_banners(findings, status, detector)
+    _render_detector_info(detector)
+
+    counts = _severity_counts(active)
+    kpis = st.columns(6)
+    kpis[0].metric("Active findings", len(active))
+    kpis[1].metric("Critical", counts.get("critical", 0))
+    kpis[2].metric("High", counts.get("high", 0))
+    kpis[3].metric("Medium", counts.get("medium", 0))
+    kpis[4].metric("Fixed", len(fixed))
+    kpis[5].metric("Reasoning queue", status.get("queue_size", 0))
+
+    if not findings:
+        st.info("No findings for the current filters. Use 'Run detector now' to trigger an analysis.")
+        return
+
+    chart_cols = st.columns(2)
+    with chart_cols[0]:
+        st.subheader("Active findings by severity")
+        sev_df = pd.DataFrame(
+            {"severity": SEVERITY_ORDER, "count": [counts.get(level, 0) for level in SEVERITY_ORDER]}
+        )
+        st.bar_chart(sev_df, x="severity", y="count")
+    with chart_cols[1]:
+        st.subheader("Active findings by cluster")
+        cluster_counts: dict[str, int] = {}
+        for finding in active:
+            key = finding.get("cluster") or "unassigned"
+            cluster_counts[key] = cluster_counts.get(key, 0) + 1
+        cluster_df = pd.DataFrame(sorted(cluster_counts.items()), columns=["cluster", "count"])
+        st.bar_chart(cluster_df, x="cluster", y="count")
+
+    _render_active_table(active)
+    _render_fixed_table(fixed)
 
 
 if auto_refresh:

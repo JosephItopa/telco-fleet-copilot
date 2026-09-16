@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 Severity = Literal["critical", "high", "medium", "low", "info"]
 TargetKind = Literal["app", "cluster"]
 DataSource = Literal["prometheus", "fallback"]
-FindingStatus = Literal["DETECTED", "REASONING", "RECOMMENDED", "FAILED"]
+FindingStatus = Literal["DETECTED", "REASONING", "RECOMMENDED", "FAILED", "RESOLVED"]
 AIStatus = Literal["pending", "completed", "failed", "skipped"]
 
 
@@ -49,5 +49,7 @@ class Finding(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     source: DataSource = "fallback"
     status: FindingStatus = "DETECTED"
+    resolved_at: str | None = None
+    resolved_note: str | None = None
     detected_by: str = "detector/threshold-rules-v1"
     ai: AIAnalysis = Field(default_factory=AIAnalysis)

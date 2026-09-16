@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 
-from common.models import AIAnalysis, Finding
+from common.models import AIAnalysis, Finding, utcnow
 
 from . import catalog, config, reasoner
 from .store import FindingStore
@@ -49,7 +49,10 @@ async def _consume() -> None:
 
             analysis = await reasoner.analyze(finding)
             finding.ai = analysis
-            finding.status = "RECOMMENDED" if analysis.status == "completed" else "FAILED"
+            if finding.status == "RESOLVED":
+                logger.info("reasoned incident=%s but it is resolved; keeping status", incident_id)
+            else:
+                finding.status = "RECOMMENDED" if analysis.status == "completed" else "FAILED"
             await store.upsert(finding)
             logger.info(
                 "reasoned incident=%s status=%s provider=%s",
@@ -204,8 +207,38 @@ async def reanalyze(incident_id: str) -> dict[str, Any]:
     finding = await store.get(incident_id)
     if finding is None:
         raise HTTPException(status_code=404, detail="finding not found")
+    if finding.status == "RESOLVED":
+        raise HTTPException(status_code=409, detail="finding is flagged as fixed; reopen it first")
     finding.ai = AIAnalysis(status="pending", provider="nvidia", model=config.NVIDIA_MODEL)
     finding.status = "REASONING"
     await store.upsert(finding)
     await queue.put(incident_id)
     return {"accepted": True, "queued_for_reasoning": True, "incident_id": incident_id}
+
+
+@app.post("/findings/{incident_id}/resolve")
+async def resolve(incident_id: str, note: str | None = Query(default=None)) -> dict[str, Any]:
+    """Flag a finding as fixed."""
+    finding = await store.get(incident_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    finding.status = "RESOLVED"
+    finding.resolved_at = utcnow()
+    finding.resolved_note = note
+    await store.upsert(finding)
+    logger.info("finding flagged as fixed incident=%s", incident_id)
+    return finding.model_dump(mode="json")
+
+
+@app.post("/findings/{incident_id}/reopen")
+async def reopen(incident_id: str) -> dict[str, Any]:
+    """Undo the fixed flag so the finding returns to the active list."""
+    finding = await store.get(incident_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    finding.status = "RECOMMENDED" if finding.ai.status in {"completed", "failed", "skipped"} else "DETECTED"
+    finding.resolved_at = None
+    finding.resolved_note = None
+    await store.upsert(finding)
+    logger.info("finding reopened incident=%s status=%s", incident_id, finding.status)
+    return finding.model_dump(mode="json")
