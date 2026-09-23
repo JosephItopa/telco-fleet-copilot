@@ -1,13 +1,14 @@
-"""Streamlit dashboard for the AIOps prototype.
+"""Streamlit dashboard for the AIOps platform.
 
-Reads enriched findings from the reasoning worker and presents the detector's
-findings, evidence, and LLM recommendations. When Prometheus is unreachable the
-detector serves sample records and the dashboard shows a FALLBACK banner.
+Reads only from the API service: fleet health, incidents by severity/app/cluster,
+detector activity, recent incidents, incident timeline and incident details, plus
+on-demand AI analysis.
 """
 
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -17,335 +18,201 @@ import api_client as api
 REFRESH_SECONDS = int(os.getenv("DASHBOARD_REFRESH_SECONDS", "15"))
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 
-st.set_page_config(page_title="AIOps Console", page_icon=None, layout="wide")
-
-st.title("AIOps Console")
-st.caption(
-    "Robust microservice and cluster AIOps prototype: detector -> async reasoning worker -> dashboard."
-)
+st.set_page_config(page_title="AIOps Platform", page_icon=None, layout="wide")
+st.title("AIOps Platform")
+st.caption("Kubernetes-native telemetry: collectors -> Kafka -> consumers -> detectors -> API.")
 
 with st.sidebar:
     st.header("Controls")
     auto_refresh = st.toggle("Auto refresh", value=True, help=f"Refreshes every {REFRESH_SECONDS}s")
-    severities = st.multiselect(
-        "Severity",
-        options=SEVERITY_ORDER,
-        default=["critical", "high", "medium"],
-    )
-    kind_label = st.selectbox("Target kind", options=["all", "app", "cluster"], index=0)
+    severity_filter = st.multiselect("Severity", SEVERITY_ORDER, default=SEVERITY_ORDER)
+    status_filter = st.multiselect("Incident status", ["NEW", "ONGOING", "RESOLVED"], default=["NEW", "ONGOING"])
     if st.button("Refresh now", width="stretch"):
         st.rerun()
-    if st.button("Run detector now", width="stretch"):
-        try:
-            result = api.run_analysis()
-            st.success(f"Detector ran: {result.get('findings', 0)} new finding(s), source={result.get('source')}.")
-        except api.ServiceError as exc:
-            st.error(f"Could not reach the detector: {exc}")
     st.divider()
-    st.caption(f"Worker: `{api.WORKER_URL}`")
-    st.caption(f"Detector: `{api.DETECTOR_URL}`")
+    st.caption(f"API: `{api.API_URL}`")
 
 
-def _flatten_metrics(metrics: dict) -> dict:
-    flat: dict = {}
-    for key, value in (metrics or {}).items():
-        if isinstance(value, dict):
-            for sub_key, sub_value in value.items():
-                flat[f"{key}.{sub_key}"] = sub_value
-        else:
-            flat[key] = value
-    return flat
-
-
-def _severity_counts(findings: list[dict]) -> dict:
+def _severity_chart(items: list[dict]) -> pd.DataFrame:
     counts = {level: 0 for level in SEVERITY_ORDER}
-    for finding in findings:
-        counts[finding["severity"]] = counts.get(finding["severity"], 0) + 1
-    return counts
+    for item in items:
+        counts[item.get("severity", "info")] = counts.get(item.get("severity", "info"), 0) + 1
+    return pd.DataFrame({"severity": SEVERITY_ORDER, "count": [counts[level] for level in SEVERITY_ORDER]})
 
 
-def _render_source_banners(findings: list[dict], status: dict, detector: dict | None) -> None:
-    sources = {finding.get("source") for finding in findings}
-    detector_source = (detector or {}).get("last_source")
-
-    col_left, col_right = st.columns(2)
-    with col_left:
-        if "fallback" in sources or (not findings and detector_source == "fallback"):
-            st.warning(
-                "FALLBACK SAMPLE DATA: Prometheus is not reachable. Findings were produced "
-                "from bundled sample records and are for demo purposes."
-            )
-        elif "prometheus" in sources or detector_source == "prometheus":
-            st.success("LIVE DATA: findings were produced from the Prometheus connection.")
-        else:
-            st.info("No telemetry collected yet. The detector runs on a 3-minute interval.")
-    with col_right:
-        llm = status.get("llm", {})
-        if llm.get("configured"):
-            st.success(f"LLM configured: {llm.get('model')} (reason for severity >= {llm.get('reason_min_severity')}).")
-        else:
-            st.warning(
-                "NVIDIA_API_KEY is not configured. Findings still appear, enriched with the "
-                "deterministic recommendation catalog."
-            )
+def _count_chart(items: list[dict], field: str, label: str) -> pd.DataFrame:
+    counts: dict[str, int] = {}
+    for item in items:
+        key = item.get(field) or "unassigned"
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return pd.DataFrame({label: [], "count": []})
+    frame = pd.DataFrame(sorted(counts.items(), key=lambda pair: pair[1], reverse=True), columns=[label, "count"])
+    return frame.head(15)
 
 
-def _render_detector_info(detector: dict | None) -> None:
-    if not detector:
-        st.caption("Detector status unavailable.")
+def _timeline(items: list[dict]) -> pd.DataFrame:
+    if not items:
+        return pd.DataFrame({"time": [], "incidents": []})
+    frame = pd.DataFrame({"timestamp": pd.to_datetime([item["last_detected"] for item in items], utc=True)})
+    frame = frame.set_index("timestamp").resample("1h").size().reset_index(name="incidents")
+    return frame.rename(columns={"timestamp": "time"})
+
+
+def _health_badge(payload: dict, key: str = "reachable") -> str:
+    if not payload:
+        return "unknown"
+    return "healthy" if payload.get(key) else "degraded"
+
+
+def _render_overview() -> None:
+    try:
+        summary = api.summary()
+        anomalies = api.current_anomalies()
+        kafka = api.kafka_health()
+        collectors = api.collectors_health()
+        detectors = api.detectors_status()
+    except api.ApiError as exc:
+        st.error(f"API unavailable: {exc}")
+        st.info("Start the stack with `docker compose up --build`.")
         return
-    cols = st.columns(4)
-    cols[0].metric("Detector runs", detector.get("runs", 0))
-    cols[1].metric("Last source", str(detector.get("last_source", "n/a")).upper())
-    cols[2].metric("Poll interval", f"{detector.get('poll_interval_seconds', 0)}s")
-    cols[3].metric("Series collected", detector.get("last_series_count", 0))
-    if detector.get("last_error"):
-        st.caption(f"Prometheus fallback reason: {detector['last_error']}")
-    st.caption(f"Last analysis: {detector.get('last_run_at')}")
+
+    kpis = st.columns(6)
+    kpis[0].metric("Applications monitored", summary.get("applications_monitored", 0))
+    kpis[1].metric("Healthy applications", summary.get("applications_healthy", 0))
+    kpis[2].metric("Applications with anomalies", summary.get("applications_with_anomalies", 0))
+    kpis[3].metric("Active incidents", summary.get("incidents_active", 0))
+    kpis[4].metric("Resolved incidents", summary.get("incidents_resolved", 0))
+    by_severity = summary.get("incidents_by_severity", {})
+    kpis[5].metric("Critical / High", f"{by_severity.get('critical', 0)} / {by_severity.get('high', 0)}")
+
+    platform = st.columns(4)
+    platform[0].metric("Collector", _health_badge(collectors.get("collector", {})))
+    platform[1].metric("Kafka consumers", _health_badge(kafka.get("consumer", {})))
+    platform[2].metric("Detector service", _health_badge(detectors.get("detector_service", {})))
+    platform[3].metric("Inference", "configured" if summary.get("ai_configured", True) else "n/a")
+
+    chart_cols = st.columns(3)
+    with chart_cols[0]:
+        st.subheader("Incidents by severity")
+        st.bar_chart(_severity_chart(anomalies), x="severity", y="count")
+    with chart_cols[1]:
+        st.subheader("Incidents by application")
+        st.bar_chart(_count_chart(anomalies, "app_id", "application"), x="application", y="count")
+    with chart_cols[2]:
+        st.subheader("Incidents by cluster")
+        st.bar_chart(_count_chart(anomalies, "cluster_id", "cluster"), x="cluster", y="count")
+
+    st.subheader("Incident timeline")
+    st.line_chart(_timeline(anomalies), x="time", y="incidents")
+
+    activity = detectors.get("detectors", [])
+    if activity:
+        st.subheader("Detector activity")
+        st.dataframe(pd.DataFrame(activity), hide_index=True, width="stretch")
 
 
-def _render_ai(finding: dict) -> None:
-    ai = finding.get("ai", {})
-    status = ai.get("status", "pending")
+def _render_incidents() -> None:
+    try:
+        items = api.incidents(status=",".join(status_filter) if status_filter else None, severity=",".join(severity_filter) if severity_filter else None)
+    except api.ApiError as exc:
+        st.error(f"Could not load incidents: {exc}")
+        return
 
-    st.subheader("AI analysis and recommendation")
-    if status == "pending":
-        st.info(
-            "Reasoning in progress. The async worker is calling the LLM. "
-            "Any response received so far is shown below."
-        )
-    elif status == "failed":
-        st.warning(f"LLM reasoning failed; deterministic recommendation shown. Error: {ai.get('error')}")
-    elif status == "skipped":
-        st.info("Below the reasoning severity threshold; deterministic recommendation attached.")
+    st.subheader("Recent incidents")
+    if not items:
+        st.info("No incidents match the current filters.")
+        return
 
-    has_content = any(ai.get(field) for field in ("summary", "root_cause", "remediation_steps", "risk"))
-    if has_content:
-        if ai.get("summary"):
-            st.markdown(f"**Summary.** {ai['summary']}")
-        if ai.get("root_cause"):
-            st.markdown(f"**Likely root cause.** {ai['root_cause']}")
-        if ai.get("remediation_steps"):
-            st.markdown("**Recommended remediation steps**")
-            for index, step in enumerate(ai["remediation_steps"], start=1):
-                st.markdown(f"{index}. {step}")
-        if ai.get("risk"):
-            st.markdown(f"**Risk of acting.** {ai['risk']}")
+    table = pd.DataFrame(
+        [
+            {
+                "incident_id": item["incident_id"],
+                "severity": item["severity"],
+                "status": item["status"],
+                "application": item["app_id"],
+                "cluster": item.get("cluster_id"),
+                "anomaly": item["anomaly_type"],
+                "observations": item.get("observation_count"),
+                "last_detected": item.get("last_detected"),
+                "ai": (item.get("ai") or {}).get("status"),
+            }
+            for item in items
+        ]
+    )
+    st.dataframe(table, hide_index=True, width="stretch")
 
-        confidence = ai.get("confidence")
-        if confidence is not None and status != "pending":
-            st.progress(min(1.0, max(0.0, float(confidence))), text=f"Confidence: {float(confidence):.0%}")
-        st.caption(
-            f"provider={ai.get('provider')} model={ai.get('model')} "
-            f"latency={ai.get('latency_seconds')}s generated_at={ai.get('generated_at')}"
-        )
-    elif status == "pending":
-        st.caption("No recommendation text has been returned yet.")
-
-    if st.button("Re-analyze with LLM", key=f"reanalyze-{finding['incident_id']}"):
-        try:
-            api.reanalyze(finding["incident_id"])
-            st.success("Queued for re-analysis. Refresh in a few seconds.")
-        except api.ServiceError as exc:
-            st.error(str(exc))
+    options = {item["incident_id"]: item for item in items}
+    labels = {
+        key: f"{key} | {item['severity']} | {item['app_id']} | {item['anomaly_type']}"
+        for key, item in options.items()
+    }
+    choice = st.selectbox("Inspect incident", options=list(options), format_func=lambda key: labels[key])
+    if choice:
+        _render_detail(options[choice])
 
 
-def _render_detail(finding: dict) -> None:
+def _render_detail(item: dict) -> None:
     st.divider()
     header = st.columns([3, 1])
-    header[0].subheader(f"{finding['target']}  -  {finding['anomaly']}")
-    header[1].metric("Severity", finding["severity"].upper())
+    header[0].subheader(f"{item['app_id']} — {item['anomaly_type']}")
+    header[1].metric("Severity", str(item["severity"]).upper())
 
-    meta = st.columns(4)
-    meta[0].metric("Kind", finding["kind"])
-    meta[1].metric("Cluster", finding.get("cluster") or "n/a")
-    meta[2].metric("Source", str(finding.get("source", "")).upper())
-    meta[3].metric("Status", finding.get("status", ""))
+    meta = st.columns(5)
+    meta[0].metric("Status", item["status"])
+    meta[1].metric("Cluster", item.get("cluster_id") or "n/a")
+    meta[2].metric("Detector", item.get("detector_id") or "n/a")
+    meta[3].metric("Kafka partition", item.get("kafka_partition"))
+    meta[4].metric("Observations", item.get("observation_count"))
 
-    st.markdown(f"**Detector reason.** {finding.get('reason', '')}")
-    st.caption(f"incident_id={finding['incident_id']}  created_at={finding['created_at']}  detected_by={finding.get('detected_by')}")
+    st.caption(
+        f"fingerprint={item.get('fingerprint')}  first_detected={item.get('first_detected')}  "
+        f"last_detected={item.get('last_detected')}"
+    )
 
-    left, right = st.columns([1, 1])
+    left, right = st.columns(2)
     with left:
-        st.subheader("Evidence")
-        evidence = finding.get("evidence", {})
-        st.json(evidence)
-        flat = _flatten_metrics(evidence.get("metrics", {}))
-        if flat:
-            st.dataframe(pd.DataFrame(sorted(flat.items()), columns=["metric", "value"]), hide_index=True, width="stretch")
+        st.markdown("**Evidence**")
+        st.json(item.get("evidence", []))
     with right:
-        _render_ai(finding)
+        st.markdown("**AI analysis**")
+        analysis = item.get("ai")
+        if not analysis:
+            st.info("No AI analysis yet.")
+        else:
+            status = analysis.get("status")
+            if status == "failed":
+                st.warning(f"AI analysis failed: {analysis.get('error')}")
+            if analysis.get("explanation"):
+                st.markdown(f"**Explanation.** {analysis['explanation']}")
+            if analysis.get("root_causes"):
+                st.markdown("**Root-cause hypotheses**")
+                for cause in analysis["root_causes"]:
+                    st.markdown(f"- {cause}")
+            if analysis.get("remediation"):
+                st.markdown("**Recommended remediation**")
+                for index, step in enumerate(analysis["remediation"], start=1):
+                    st.markdown(f"{index}. {step}")
+            if analysis.get("next_action"):
+                st.markdown(f"**Next diagnostic action.** {analysis['next_action']}")
+            if analysis.get("confidence") is not None:
+                st.progress(float(analysis["confidence"]), text=f"Confidence: {float(analysis['confidence']):.0%}")
+            st.caption(f"model={analysis.get('model')} latency={analysis.get('latency_seconds')}s")
 
-
-def _bump_table() -> None:
-    """Reset the tables so a moved row does not leave a stale selection behind."""
-    st.session_state["table_version"] = st.session_state.get("table_version", 0) + 1
-
-
-def _table_version() -> int:
-    return st.session_state.get("table_version", 0)
-
-
-def _selected_incident_id(rows: pd.DataFrame, event) -> str | None:
-    selected = event.selection.rows if event and event.selection else []
-    if not selected:
-        return None
-    return str(rows.iloc[selected[0]]["incident_id"])
-
-
-def _render_active_table(active: list[dict]) -> None:
-    st.subheader("Findings")
-    if not active:
-        st.success("No active findings for the current filters.")
-        return
-
-    rows = pd.DataFrame(
-        [
-            {
-                "incident_id": finding["incident_id"],
-                "severity": finding["severity"],
-                "kind": finding["kind"],
-                "target": finding["target"],
-                "cluster": finding.get("cluster"),
-                "anomaly": finding["anomaly"],
-                "source": finding["source"],
-                "status": finding["status"],
-                "ai": finding.get("ai", {}).get("status"),
-                "created_at": finding["created_at"],
-            }
-            for finding in active
-        ]
-    )
-    event = st.dataframe(
-        rows,
-        hide_index=True,
-        width="stretch",
-        on_select="rerun",
-        selection_mode="single-row",
-        key=f"active-findings-table-{_table_version()}",
-    )
-    incident_id = _selected_incident_id(rows, event)
-
-    move_clicked = st.button(
-        "Move selected row to fixed records",
-        disabled=incident_id is None,
-        key="move-selected-to-fixed",
-    )
-    if move_clicked and incident_id:
-        try:
-            api.resolve(incident_id)
-            _bump_table()
-            st.success(f"{incident_id} moved to Fixed records.")
-            st.rerun()
-        except api.ServiceError as exc:
-            st.error(str(exc))
-
-    if incident_id is None:
-        st.caption("Select a row to see its evidence and AI analysis, then move it to Fixed records.")
-        return
-
-    finding = next(item for item in active if item["incident_id"] == incident_id)
-    _render_detail(finding)
-
-
-def _render_fixed_table(fixed: list[dict]) -> None:
-    st.divider()
-    st.subheader("Fixed records")
-    if not fixed:
-        st.caption("No findings have been flagged as fixed yet.")
-        return
-
-    rows = pd.DataFrame(
-        [
-            {
-                "incident_id": finding["incident_id"],
-                "severity": finding["severity"],
-                "kind": finding["kind"],
-                "target": finding["target"],
-                "cluster": finding.get("cluster"),
-                "anomaly": finding["anomaly"],
-                "fixed_at": finding.get("resolved_at"),
-                "created_at": finding["created_at"],
-            }
-            for finding in fixed
-        ]
-    )
-    event = st.dataframe(
-        rows,
-        hide_index=True,
-        width="stretch",
-        on_select="rerun",
-        selection_mode="single-row",
-        key=f"fixed-records-table-{_table_version()}",
-    )
-    incident_id = _selected_incident_id(rows, event)
-
-    reopen_clicked = st.button(
-        "Reopen selected record",
-        disabled=incident_id is None,
-        key="reopen-selected-record",
-    )
-    if reopen_clicked and incident_id:
-        try:
-            api.reopen(incident_id)
-            _bump_table()
-            st.success(f"{incident_id} moved back to active findings.")
-            st.rerun()
-        except api.ServiceError as exc:
-            st.error(str(exc))
-
-    st.caption(f"{len(fixed)} record(s) flagged as fixed.")
+    if st.button(f"Analyze {item['incident_id']} with AI", key=f"analyze-{item['incident_id']}"):
+        with st.spinner("Calling the inference service..."):
+            try:
+                result = api.analyze(item["incident_id"])
+                st.success("Analysis complete.")
+                st.json(result.get("ai"))
+            except api.ApiError as exc:
+                st.error(str(exc))
 
 
 def _render_content() -> None:
-    try:
-        status = api.get_status()
-        detector = api.detector_status()
-        severity_param = ",".join(severities) if severities else None
-        kind_param = None if kind_label == "all" else kind_label
-        findings = api.get_findings(severity=severity_param, kind=kind_param)
-    except api.ServiceError as exc:
-        st.error(f"Could not reach the reasoning worker: {exc}")
-        st.info("Start the prototype with `docker compose up --build`, or run the services locally.")
-        return
-
-    active = [finding for finding in findings if finding["status"] != "RESOLVED"]
-    fixed = [finding for finding in findings if finding["status"] == "RESOLVED"]
-
-    _render_source_banners(findings, status, detector)
-    _render_detector_info(detector)
-
-    counts = _severity_counts(active)
-    kpis = st.columns(6)
-    kpis[0].metric("Active findings", len(active))
-    kpis[1].metric("Critical", counts.get("critical", 0))
-    kpis[2].metric("High", counts.get("high", 0))
-    kpis[3].metric("Medium", counts.get("medium", 0))
-    kpis[4].metric("Fixed", len(fixed))
-    kpis[5].metric("Reasoning queue", status.get("queue_size", 0))
-
-    if not findings:
-        st.info("No findings for the current filters. Use 'Run detector now' to trigger an analysis.")
-        return
-
-    chart_cols = st.columns(2)
-    with chart_cols[0]:
-        st.subheader("Active findings by severity")
-        sev_df = pd.DataFrame(
-            {"severity": SEVERITY_ORDER, "count": [counts.get(level, 0) for level in SEVERITY_ORDER]}
-        )
-        st.bar_chart(sev_df, x="severity", y="count")
-    with chart_cols[1]:
-        st.subheader("Active findings by cluster")
-        cluster_counts: dict[str, int] = {}
-        for finding in active:
-            key = finding.get("cluster") or "unassigned"
-            cluster_counts[key] = cluster_counts.get(key, 0) + 1
-        cluster_df = pd.DataFrame(sorted(cluster_counts.items()), columns=["cluster", "count"])
-        st.bar_chart(cluster_df, x="cluster", y="count")
-
-    _render_active_table(active)
-    _render_fixed_table(fixed)
+    _render_overview()
+    st.divider()
+    _render_incidents()
 
 
 if auto_refresh:

@@ -1,4 +1,4 @@
-"""HTTP client for the AIOps prototype services."""
+"""Dashboard data access. The dashboard only talks to the API service."""
 
 from __future__ import annotations
 
@@ -7,75 +7,75 @@ from typing import Any
 
 import requests
 
-WORKER_URL = os.getenv("WORKER_URL", "http://localhost:9100").rstrip("/")
-DETECTOR_URL = os.getenv("DETECTOR_URL", "http://localhost:9000").rstrip("/")
-TIMEOUT = float(os.getenv("DASHBOARD_TIMEOUT_SECONDS", "10"))
+API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
+TIMEOUT = float(os.getenv("DASHBOARD_TIMEOUT_SECONDS", "30"))
 
 
-class ServiceError(RuntimeError):
-    """Raised when a backend service is unreachable or returns an error."""
+class ApiError(RuntimeError):
+    pass
 
 
-def _get(base: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        response = requests.get(f"{base}{path}", params=params, timeout=TIMEOUT)
+        response = requests.get(f"{API_URL}{path}", params=params, timeout=TIMEOUT)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
-        raise ServiceError(f"{base}{path}: {exc}") from exc
+        raise ApiError(f"{path}: {exc}") from exc
 
 
-def _post(base: str, path: str) -> dict[str, Any]:
+def _post(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        response = requests.post(f"{base}{path}", timeout=TIMEOUT)
+        response = requests.post(f"{API_URL}{path}", params=params, timeout=TIMEOUT)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
-        raise ServiceError(f"{base}{path}: {exc}") from exc
+        raise ApiError(f"{path}: {exc}") from exc
 
 
-def get_status() -> dict[str, Any]:
-    return _get(WORKER_URL, "/status")
+def summary() -> dict[str, Any]:
+    return _get("/summary")
 
 
-def get_summary() -> dict[str, Any]:
-    return _get(WORKER_URL, "/summary")
-
-
-def get_findings(severity: str | None = None, kind: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {"limit": limit}
+def current_anomalies(severity: str | None = None) -> list[dict[str, Any]]:
+    params = {"limit": 500}
     if severity:
         params["severity"] = severity
-    if kind:
-        params["kind"] = kind
-    return _get(WORKER_URL, "/findings", params).get("items", [])
+    return _get("/anomalies/current", params).get("items", [])
 
 
-def reanalyze(incident_id: str) -> dict[str, Any]:
-    return _post(WORKER_URL, f"/findings/{incident_id}/reanalyze")
+def incidents(status: str | None = None, severity: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit": limit}
+    if status:
+        params["status"] = status
+    if severity:
+        params["severity"] = severity
+    return _get("/incidents", params).get("items", [])
 
 
-def resolve(incident_id: str) -> dict[str, Any]:
-    """Flag a finding as fixed."""
-    return _post(WORKER_URL, f"/findings/{incident_id}/resolve")
+def incident(incident_id: str) -> dict[str, Any]:
+    return _get(f"/incidents/{incident_id}")
 
 
-def reopen(incident_id: str) -> dict[str, Any]:
-    """Undo the fixed flag on a finding."""
-    return _post(WORKER_URL, f"/findings/{incident_id}/reopen")
+def applications_health() -> dict[str, Any]:
+    return _get("/applications/health")
 
 
-def detector_status() -> dict[str, Any] | None:
-    try:
-        return _get(DETECTOR_URL, "/status")
-    except ServiceError:
-        return None
+def clusters_health() -> dict[str, Any]:
+    return _get("/clusters/health")
 
 
-def run_analysis() -> dict[str, Any]:
-    try:
-        response = requests.post(f"{DETECTOR_URL}/analyze", timeout=60)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as exc:
-        raise ServiceError(f"analyze: {exc}") from exc
+def detectors_status() -> dict[str, Any]:
+    return _get("/detectors/status")
+
+
+def kafka_health() -> dict[str, Any]:
+    return _get("/kafka/health")
+
+
+def collectors_health() -> dict[str, Any]:
+    return _get("/collectors/health")
+
+
+def analyze(incident_id: str, force: bool = False) -> dict[str, Any]:
+    return _post(f"/incidents/{incident_id}/analyze", {"force": str(force).lower()})

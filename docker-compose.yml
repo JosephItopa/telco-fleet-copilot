@@ -1,34 +1,143 @@
+name: telco-fleet-copilot
+
 services:
-  reasoning-worker:
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops
+      POSTGRES_DB: aiops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops -d aiops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  collector:
     build:
       context: .
-      dockerfile: reasoning_worker/Dockerfile
-    env_file: .env
+      dockerfile: collectors/Dockerfile
+    environment:
+      SERVICE_NAME: collector
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      COLLECTOR_MODE: ${COLLECTOR_MODE:-simulated}
+      CLUSTERS: ${CLUSTERS:-cluster-a,cluster-b,cluster-c}
+      SIMULATED_APPS: ${SIMULATED_APPS:-120}
+      COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-15}
     ports:
       - "9100:9100"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # Scale the fleet: docker compose up --scale collector=3
+
+  consumer:
+    build:
+      context: .
+      dockerfile: consumers/Dockerfile
+    environment:
+      SERVICE_NAME: consumer
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: aiops-partition-consumers
+      DETECTOR_URL: http://detector:9200
+    ports:
+      - "9150:9150"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      detector:
+        condition: service_started
+    # Scale the group: docker compose up --scale consumer=3
 
   detector:
     build:
       context: .
-      dockerfile: detector/Dockerfile
-    env_file: .env
+      dockerfile: detectors/Dockerfile
     environment:
-      WORKER_URL: http://reasoning-worker:9100
+      SERVICE_NAME: detector
+      DATABASE_URL: postgresql+psycopg2://aiops:aiops@postgres:5432/aiops
+      DETECTION_WINDOW_SECONDS: ${DETECTION_WINDOW_SECONDS:-300}
+      INCIDENT_RESOLVE_AFTER_SECONDS: ${INCIDENT_RESOLVE_AFTER_SECONDS:-900}
     ports:
-      - "9000:9000"
+      - "9200:9200"
     depends_on:
-      - reasoning-worker
+      postgres:
+        condition: service_healthy
+    # Scale the fleet: docker compose up --scale detector=3
+
+  inference:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    environment:
+      SERVICE_NAME: inference
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODELS: ${NVIDIA_MODELS:-glm-5-3,glm-5-3-flash,kimi-k3,muse-glimmer-30b}
+      MODEL_FAILURE_THRESHOLD: ${MODEL_FAILURE_THRESHOLD:-3}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+    ports:
+      - "9300:9300"
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      SERVICE_NAME: api
+      DATABASE_URL: postgresql+psycopg2://aiops:aiops@postgres:5432/aiops
+      INFERENCE_URL: http://inference:9300
+      DETECTOR_URL: http://detector:9200
+      COLLECTOR_URL: http://collector:9100
+      CONSUMER_URL: http://consumer:9150
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inference:
+        condition: service_started
 
   dashboard:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
-    env_file: .env
     environment:
-      WORKER_URL: http://reasoning-worker:9100
-      DETECTOR_URL: http://detector:9000
+      API_URL: http://api:8000
+      DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-15}
     ports:
       - "8501:8501"
     depends_on:
-      - reasoning-worker
-      - detector
+      - api
+
+volumes:
+  postgres-data:

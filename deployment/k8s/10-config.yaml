@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-config
+  namespace: aiops
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka.aiops.svc.cluster.local:9092"
+  KAFKA_TOPIC: "app-performance-metrics"
+  KAFKA_DLQ_TOPIC: "app-performance-metrics-dlq"
+  KAFKA_PARTITIONS: "24"
+  KAFKA_CONSUMER_GROUP: "aiops-partition-consumers"
+  COLLECTOR_MODE: "k8s"
+  SIMULATED_APPS: "200"
+  COLLECT_INTERVAL_SECONDS: "15"
+  DETECTION_WINDOW_SECONDS: "300"
+  INCIDENT_RESOLVE_AFTER_SECONDS: "900"
+  NVIDIA_BASE_URL: "https://integrate.api.nvidia.com/v1"
+  NVIDIA_MODELS: "glm-5-3,glm-5-3-flash,kimi-k3,muse-glimmer-30b"
+  MODEL_FAILURE_THRESHOLD: "3"
+  LLM_TIMEOUT_SECONDS: "60"
+  LOG_LEVEL: "INFO"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-secrets
+  namespace: aiops
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql+psycopg2://aiops:aiops@postgres.aiops.svc.cluster.local:5432/aiops"
+  NVIDIA_API_KEY: "replace-me"
+  POSTGRES_PASSWORD: "aiops"

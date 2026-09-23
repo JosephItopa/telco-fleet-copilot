@@ -1,113 +1,166 @@
-# Robust Microservice and Cluster-Based AIOps Platform (Prototype)
+# Robust Microservice and Cluster-Based AIOps Platform
 
-Real-time detection, recommendation, and remediation prototype for a large app
-fleet (200+ apps across clusters). The original single `aiops-controller` is
-split into two services, plus a dashboard:
+Kubernetes-native AIOps platform for detecting, explaining and recommending
+remediation for application and cluster anomalies across many Kubernetes
+clusters and thousands of applications. Telemetry is collected directly from the
+Kubernetes API; no external metrics backend is required.
 
-- **detector** — collects telemetry every 3 minutes, detects anomalies, publishes findings.
-- **reasoning-worker** — async worker that calls an LLM to produce grounded recommendations, and serves the findings API.
-- **dashboard** — Streamlit UI presenting findings, evidence, and AI recommendations.
+## Architecture
 
-```
-Prometheus ──(PromQL, every 180s)──> detector ──POST /findings──> reasoning-worker ──> dashboard
-        (unreachable -> sample records)         (async queue + LLM)
-```
-
-## Stack
-
-- FastAPI (both microservices)
-- LLM via the NVIDIA integrate API (`openai/gpt-oss-20b`), OpenAI-compatible client
-- Streamlit dashboard
-
-No Kafka: the detector calls the worker over HTTP and the worker uses an in-process
-async queue for reasoning. This keeps the prototype small while preserving the
-detector / reasoning separation.
-
-## Layout
-
-```
-common/              shared domain models (Finding, AIAnalysis)
-detector/            collection, normalization, detection rules, publisher
-reasoning_worker/    async queue, LLM reasoning, deterministic fallback catalog, findings API
-dashboard/           Streamlit UI
+```mermaid
+flowchart LR
+  subgraph K8s[Kubernetes Clusters]
+    Apps[Applications / Nodes]
+  end
+  Apps --> Collectors[Collector Fleet]
+  Collectors -->|app_id key| Kafka[(Kafka: app-performance-metrics)]
+  Kafka --> Consumers[Partition Consumers]
+  Consumers --> Detectors[Detector Fleet]
+  Detectors --> PG[(PostgreSQL)]
+  API[FastAPI Service] --> PG
+  API --> Inference[AI Inference]
+  Dashboard[Dashboard] --> API
+  Detectors -. DLQ .-> Kafka
 ```
 
-## Configuration (.env)
+Data flow: collectors discover workloads and emit a normalized event schema to a
+partitioned Kafka topic keyed by `app_id`. A consumer group reads those
+partitions, forwards batches to the detector fleet, which applies configurable
+rules, fingerprints anomalies and writes deduplicated incidents to PostgreSQL.
+The FastAPI service serves processed incidents and health to the dashboard and
+invokes the AI inference service on demand. The API is never in the raw-metrics
+path.
 
-| Variable | Default | Purpose |
+## Services
+
+| Service | Port | Responsibility |
 | --- | --- | --- |
-| `NVIDIA_API_KEY` | `your_nvidia_api_key_here` | LLM key (leave placeholder to run on the deterministic fallback) |
-| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible endpoint |
-| `NVIDIA_MODEL` | `openai/gpt-oss-20b` | Model name |
-| `PROMETHEUS_URL` | `http://localhost:9090` | Prometheus base URL |
-| `POLL_INTERVAL_SECONDS` | `180` | Detector collection interval (3 minutes) |
-| `FALLBACK_ENABLED` | `true` | Use sample records when Prometheus is unreachable |
-| `INCIDENT_COOLDOWN_SECONDS` | `900` | Suppress repeat findings for the same target/anomaly |
-| `WORKER_URL` | `http://localhost:9100` | Detector -> worker and dashboard -> worker |
-| `DETECTOR_URL` | `http://localhost:9000` | Dashboard -> detector |
-| `REASON_MIN_SEVERITY` | `high` | Minimum severity that triggers the LLM |
-| `DEDUP_WINDOW_SECONDS` | `900` | Worker-side suppression of repeat target/anomaly findings |
+| `collectors/` | 9100 | Kubernetes API discovery + normalization, Kafka producer |
+| `kafka/` | 9092 | Topic provisioning, producer/consumer helpers (shared library) |
+| `consumers/` | 9150 | Kafka consumer group, rebalancing, offsets, DLQ routing |
+| `detectors/` | 9200 | Detection rules, fingerprint dedup, incident lifecycle |
+| `database/` | 5432 | SQLAlchemy models + repository (shared library) |
+| `api/` | 8000 | Incident/health/status APIs for the dashboard |
+| `inference/` | 9300 | Grounded AI analysis, 4-model failover |
+| `dashboard/` | 8501 | Streamlit UI |
 
-## Run
+## Repository structure
 
-### Docker
+```
+collectors/   Kubernetes + simulated collection, normalization
+kafka/        topic provisioning, producer, consumer helpers
+consumers/    partition consumer service
+detectors/    rules, fingerprints, detector fleet service
+api/          FastAPI service
+database/     ORM models, session, repository
+inference/    model router, prompts, inference service
+models/       shared Pydantic schema (event + incident contract)
+config/       settings, structured logging, self-monitoring metrics
+dashboard/    Streamlit dashboard
+deployment/   Docker Compose notes, Kubernetes manifests, RBAC
+tests/        unit tests
+```
+
+## Run locally
 
 ```bash
+cp .env.example .env      # set NVIDIA_API_KEY
 docker compose up --build
 ```
 
-- Dashboard: http://localhost:8501
-- Detector: http://localhost:9000
-- Reasoning worker: http://localhost:9100
+Dashboard: http://localhost:8501 · API: http://localhost:8000/docs · Collector:
+http://localhost:9100/status · Consumer: http://localhost:9150/status ·
+Detector: http://localhost:9200/status · Inference: http://localhost:9300/status.
 
-### Local
+Scale the fleet:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r reasoning_worker/requirements.txt -r detector/requirements.txt -r dashboard/requirements.txt
-
-uvicorn detector.main:app --port 9000
-uvicorn reasoning_worker.main:app --port 9100
-streamlit run dashboard/app.py
+docker compose up -d --scale collector=3 --scale consumer=4 --scale detector=4
 ```
 
-## How it works
+The collector defaults to `COLLECTOR_MODE=simulated` so the stack runs end to end
+without a cluster. Set `COLLECTOR_MODE=k8s` (and mount a kubeconfig or run
+in-cluster with the provided RBAC) to collect real Kubernetes telemetry.
 
-1. The detector's scheduler runs at startup and every `POLL_INTERVAL_SECONDS`.
-   It queries Prometheus (`{__name__=~"api_.*|payment_.*", app=~".+"}` and the
-   cluster equivalent). With retries and bounded timeouts.
-2. If Prometheus is unreachable and `FALLBACK_ENABLED=true`, it uses bundled
-   sample records (`detector/samples.py`) and marks the source `fallback`. The
-   dashboard shows a FALLBACK banner so sample data is never mistaken for live data.
-3. Snapshots are grouped per app+cluster and per cluster, then scored by
-   threshold rules (`detector/rules.py`): health, 5xx ratio, average latency,
-   dependency failures, node readiness, CPU/memory saturation, pending pods,
-   unavailable workloads.
-4. New findings are de-duplicated by cooldown and POSTed to the reasoning worker.
-5. The worker enqueues critical/high findings for LLM reasoning. The LLM only
-   explains and recommends from the supplied evidence; it never reports an action
-   as executed. If the LLM fails, a deterministic catalog recommendation is used.
-6. The dashboard reads the worker's `/findings` and `/summary` and renders the
-   fleet view, per-cluster breakdown, evidence, and the AI recommendation.
-7. Operators select a row in the findings table to see its analysis, then use the
-   **Move selected row to fixed records** button to flag it as fixed. The finding
-   moves to the **Fixed records** table at the bottom of the dashboard, where it can
-   be reopened and sent back to the active findings table.
+## Event schema
 
-## Endpoints
+Every collector emits the same normalized event, keyed by `app_id`:
 
-Detector (9000): `GET /`, `GET /health`, `GET /status`, `POST /analyze`,
-`GET /findings`, `GET /snapshot`, `GET /cooldowns`.
+```json
+{
+  "cluster_id": "cluster-a", "collector_id": "collector-1", "app_id": "app-cluster-a-014",
+  "namespace": "ns-cluster-a", "pod": "app-cluster-a-014-3", "timestamp": "2026-09-23T09:00:00+00:00",
+  "metric_type": "pod_cpu", "metrics": {"usage_cores": 0.95, "limit_cores": 1.0, "ratio": 0.95},
+  "labels": {"team": "team-4", "tier": "api", "kind": "workload"}
+}
+```
 
-Reasoning worker (9100): `GET /`, `GET /health`, `GET /status`, `GET /summary`,
-`POST /findings`, `GET /findings`, `GET /findings/{id}`,
-`POST /findings/{id}/reanalyze`, `POST /findings/{id}/resolve`,
-`POST /findings/{id}/reopen`.
+Collected metric types: `pod_cpu`, `pod_memory`, `node_cpu`, `node_memory`,
+`pod_status`, `container_restarts`, `deployment_replicas`, `resource_limits`,
+`node_condition`, `k8s_event`.
 
-## Notes and limitations
+## Detection and incident lifecycle
 
-- State is in-memory: restarting a service clears its findings. The next
-  iteration should back findings with Postgres/TimescaleDB.
-- Set `FALLBACK_ENABLED=false` to fail loudly instead of using sample records.
-- The LLM is strictly downstream of detection and policy. Keep remediation behind
-  human approval before adding any executor.
+Rules (`detectors/rules.py`) cover CPU saturation, memory saturation, container
+restart storms, deployment degradation, unavailable replicas, node resource
+exhaustion, abnormal resource growth and prolonged unhealthy pod states. All
+thresholds are configurable (`THRESH_*`).
+
+The incident fingerprint is `sha1(app_id | anomaly_type | metric)` — a stable
+identity, deliberately not time-bucketed. Repeated observations of the same active
+anomaly update the existing incident (`NEW` -> `ONGOING`, incrementing
+`observation_count` and keeping the earliest `first_detected`), so Kafka retries
+and detector restarts cannot create duplicates. A partial unique index on
+`fingerprint` where `status <> 'RESOLVED'` enforces this in PostgreSQL. Incidents
+with no observation inside `INCIDENT_RESOLVE_AFTER_SECONDS` are swept to
+`RESOLVED`; a later recurrence opens a new incident.
+
+Stored per incident: incident ID, application ID, cluster ID, detector ID, Kafka
+partition, anomaly type, symptom metric, severity, evidence, first/last detected,
+status, fingerprint, AI analysis, remediation and timestamps.
+
+## AI inference
+
+The API gathers the incident, its evidence and recent history and calls the
+inference service. The inference service proposes only what the evidence supports
+(explanation, evidence, root-cause hypotheses, remediation, confidence,
+next diagnostic action) and cannot invent telemetry.
+
+Model routing (`inference/router.py`) uses a **sticky active model** across
+`NVIDIA_MODELS` (default `glm-5-3, glm-5-3-flash, kimi-k3, muse-glimmer-30b`).
+The active model is retried `MODEL_FAILURE_THRESHOLD` times (default 3). Only
+after all three trials fail is it marked unhealthy and the next model selected; a
+model that keeps succeeding is never switched away from. Set the exact NVIDIA
+model IDs in `NVIDIA_MODELS` if your account exposes different names.
+
+## API endpoints
+
+`GET /summary`, `GET /incidents`, `GET /anomalies/current`,
+`GET /incidents/{id}`, `GET /incidents/{id}/timeline`, `GET /incidents/history`,
+`GET /applications/health`, `GET /clusters/health`, `GET /detectors/status`,
+`GET /kafka/health`, `GET /collectors/health`, `POST /incidents/{id}/analyze`,
+`GET /health`, `GET /metrics`.
+
+## Reliability and scalability
+
+- Horizontal scaling by adding collector replicas, Kafka partitions and
+  consumer/detector replicas; Kafka reassigns partitions automatically on
+  rebalance.
+- Producer configured for `acks=all`, idempotent delivery, batching, compression
+  and retries; consumers commit offsets only after acknowledgement.
+- Bounded retries with dead-letter routing for poison batches; backpressure via
+  consumer batching and poll limits.
+- Graceful shutdown on lifespan cancellation; structured JSON logging; health
+  endpoints on every service.
+- Dependency-free self-monitoring at `/metrics` (JSON) on collectors, consumers,
+  detectors, the API and inference — no external metrics backend involved.
+
+## Tests
+
+```bash
+pip install -r requirements.txt pytest
+pytest -q
+```
+
+Covers detection rules, fingerprinting, incident dedup/lifecycle/idempotency, and
+the 4-model failover policy.
