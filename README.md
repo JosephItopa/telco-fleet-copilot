@@ -35,7 +35,7 @@ path.
 
 | Service | Port | Responsibility |
 | --- | --- | --- |
-| `collectors/` | 9100 | Kubernetes API discovery + normalization, Kafka producer |
+| `collectors/` | 9100 | Kubernetes API discovery + normalization, seed-k8s fallback, Kafka producer |
 | `kafka/` | 9092 | Topic provisioning, producer/consumer helpers (shared library) |
 | `consumers/` | 9150 | Kafka consumer group, rebalancing, offsets, DLQ routing |
 | `detectors/` | 9200 | Detection rules, fingerprint dedup, incident lifecycle |
@@ -47,7 +47,8 @@ path.
 ## Repository structure
 
 ```
-collectors/   Kubernetes + simulated collection, normalization
+collectors/   Kubernetes + seed-k8s fallback collection, normalization
+seed_k8s/     seeded demo-cluster dataset and optional standalone publisher
 kafka/        topic provisioning, producer, consumer helpers
 consumers/    partition consumer service
 detectors/    rules, fingerprints, detector fleet service
@@ -78,9 +79,17 @@ Scale the fleet:
 docker compose up -d --scale collector=3 --scale consumer=4 --scale detector=4
 ```
 
-The collector defaults to `COLLECTOR_MODE=simulated` so the stack runs end to end
-without a cluster. Set `COLLECTOR_MODE=k8s` (and mount a kubeconfig or run
-in-cluster with the provided RBAC) to collect real Kubernetes telemetry.
+The collector defaults to `COLLECTOR_MODE=seed`, which feeds the platform from the
+bundled `seed_k8s/` dataset (a `demo-cluster` of `demo-app-XXX` workloads, ~8%
+unhealthy). Set `COLLECTOR_MODE=k8s` (and mount a kubeconfig or run in-cluster
+with the provided RBAC) to collect real Kubernetes telemetry.
+
+To run the seed data as a separate publisher process instead of through the
+collector:
+
+```bash
+python -m seed_k8s.main
+```
 
 ## Event schema
 

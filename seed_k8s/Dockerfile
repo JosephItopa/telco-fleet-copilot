@@ -10,7 +10,5 @@ COPY models ./models
 COPY config ./config
 COPY kafka ./kafka
 COPY seed_k8s ./seed_k8s
-COPY collectors ./collectors
 
-EXPOSE 9100
-CMD ["uvicorn", "collectors.main:app", "--host", "0.0.0.0", "--port", "9100"]
+CMD ["python", "-m", "seed_k8s.main"]

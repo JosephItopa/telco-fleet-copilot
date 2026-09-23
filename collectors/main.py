@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -18,9 +18,6 @@ from config.settings import settings
 from kafka.producer import build_producer, publish_batch
 from kafka.topics import ensure_topics
 from models.schema import utcnow_iso
-
-from collectors.k8s_source import KubernetesSource
-from collectors.simulator import SimulatedSource
 
 configure_logging("collector")
 logger = get_logger("collectors.main")
@@ -38,6 +35,8 @@ class CollectorState:
         self.last_cycle_at: str | None = None
         self.last_error: str | None = None
         self.apps_discovered = 0
+        self.source_mode: str | None = None
+        self.fallback_reason: str | None = None
 
 
 state = CollectorState()
@@ -45,14 +44,57 @@ source: Any = None
 producer: Any = None
 
 
-def build_source() -> Any:
-    if settings.collector_mode == "k8s":
-        return KubernetesSource(settings.k8s_contexts, settings.collector_id, settings.kubeconfig)
-    return SimulatedSource(
-        settings.clusters,
-        apps_per_cluster=max(1, settings.simulated_apps // max(1, len(settings.clusters))),
-        unhealthy_ratio=settings.simulated_unhealthy_ratio,
+def _default_k8s_factory() -> Any:
+    from collectors.k8s_source import KubernetesSource
+
+    return KubernetesSource(settings.k8s_contexts, settings.collector_id, settings.kubeconfig)
+
+
+def _default_seed_factory() -> Any:
+    from seed_k8s.dataset import SeedSource
+
+    return SeedSource(
+        apps=settings.seed_apps,
+        cluster_id=settings.seed_cluster,
+        namespace=settings.seed_namespace,
+        unhealthy_ratio=settings.seed_unhealthy_ratio,
     )
+
+
+def build_source(
+    k8s_factory: Callable[[], Any] | None = None,
+    seed_factory: Callable[[], Any] | None = None,
+) -> tuple[Any, str]:
+    """Return (source, mode).
+
+    In ``k8s`` mode the Kubernetes source is probed first; if the cluster is
+    unreachable the collector transparently falls back to the seed-k8s dataset so
+    the platform always has telemetry.
+    """
+    k8s_factory = k8s_factory or _default_k8s_factory
+    seed_factory = seed_factory or _default_seed_factory
+
+    if settings.collector_mode == "k8s":
+        try:
+            candidate = k8s_factory()
+            verify = getattr(candidate, "verify", None)
+            if callable(verify):
+                verify()
+            state.fallback_reason = None
+            return candidate, "k8s"
+        except Exception as exc:  # noqa: BLE001 - fall back rather than go dark
+            state.fallback_reason = str(exc)
+            logger.warning("kubernetes unavailable; using seed-k8s fallback", extra={"error": str(exc)})
+
+    return seed_factory(), "seed"
+
+
+def use_seed_fallback(reason: str, seed_factory: Callable[[], Any] | None = None) -> None:
+    global source
+    source = (seed_factory or _default_seed_factory)()
+    state.source_mode = "seed"
+    state.fallback_reason = reason
+    logger.warning("switched to seed-k8s fallback", extra={"reason": reason})
 
 
 async def connect_kafka() -> None:
@@ -79,7 +121,8 @@ async def connect_kafka() -> None:
 
 async def collect_loop() -> None:
     global source
-    source = build_source()
+    source, state.source_mode = build_source()
+    logger.info("collector source selected", extra={"mode": state.source_mode, "fallback_reason": state.fallback_reason})
     while True:
         cycle_start = time.perf_counter()
         try:
@@ -87,6 +130,16 @@ async def collect_loop() -> None:
                 await connect_kafka()
             events = source.collect(settings.collector_id)
             state.events_collected += len(events)
+        except Exception as exc:  # noqa: BLE001 - collection failure
+            state.failures += 1
+            state.last_error = str(exc)
+            logger.error("collection failed", extra={"mode": state.source_mode, "error": str(exc)})
+            if state.source_mode == "k8s":
+                use_seed_fallback(str(exc))
+            await asyncio.sleep(settings.collect_interval_seconds)
+            continue
+
+        try:
             published = await publish_batch(producer, settings.kafka_topic, events, "collector")
             state.events_published += published
             state.cycles += 1
@@ -94,13 +147,13 @@ async def collect_loop() -> None:
             INGEST_LATENCY.labels("collector").observe(time.perf_counter() - cycle_start)
             logger.info(
                 "collection cycle",
-                extra={"cycle": state.cycles, "events": len(events), "published": published},
+                extra={"cycle": state.cycles, "mode": state.source_mode, "events": len(events), "published": published},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - kafka failure, reconnect next cycle
             state.failures += 1
             state.kafka_connected = False
             state.last_error = str(exc)
-            logger.error("collection cycle failed", extra={"error": str(exc)})
+            logger.error("publish failed", extra={"error": str(exc)})
         await asyncio.sleep(settings.collect_interval_seconds)
 
 
@@ -129,9 +182,10 @@ def root() -> dict[str, Any]:
     return {
         "service": "collector",
         "collector_id": settings.collector_id,
-        "mode": settings.collector_mode,
+        "configured_mode": settings.collector_mode,
+        "active_source": state.source_mode,
+        "fallback_reason": state.fallback_reason,
         "topic": settings.kafka_topic,
-        "clusters": settings.clusters,
     }
 
 
@@ -153,7 +207,9 @@ def status() -> dict[str, Any]:
     return {
         "service": "collector",
         "collector_id": settings.collector_id,
-        "mode": settings.collector_mode,
+        "configured_mode": settings.collector_mode,
+        "active_source": state.source_mode,
+        "fallback_reason": state.fallback_reason,
         "started_at": state.started_at,
         "kafka_connected": state.kafka_connected,
         "topics_ready": state.topics_ready,

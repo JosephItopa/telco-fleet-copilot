@@ -43,6 +43,13 @@ class KubernetesSource:
     def _cluster_id(self, context: str) -> str:
         return context or "in-cluster"
 
+    def verify(self) -> None:
+        """Probe cluster access. Raises if the cluster is unreachable, so the
+        caller can fall back to the seed dataset."""
+        context = self.contexts[0] if self.contexts else ""
+        core, _, _ = self._clients_for(context)
+        core.list_namespace(limit=1)
+
     def collect(self, context: str = "") -> list[dict[str, Any]]:
         core, apps, custom = self._clients_for(context)
         cluster_id = self._cluster_id(context)

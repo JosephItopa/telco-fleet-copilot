@@ -70,7 +70,7 @@ class Settings:
     db_max_overflow: int = field(default_factory=lambda: _int("DB_MAX_OVERFLOW", 20))
 
     # --- collector ---------------------------------------------------------
-    collector_mode: str = field(default_factory=lambda: os.getenv("COLLECTOR_MODE", "simulated"))
+    collector_mode: str = field(default_factory=lambda: os.getenv("COLLECTOR_MODE", "seed"))
     collector_id: str = field(
         default_factory=lambda: os.getenv("COLLECTOR_ID") or os.getenv("HOSTNAME", "collector-local")
     )
@@ -79,10 +79,13 @@ class Settings:
     clusters: list[str] = field(default_factory=lambda: _list("CLUSTERS", ["cluster-a", "cluster-b", "cluster-c"]))
     kubeconfig: str = field(default_factory=lambda: os.getenv("KUBECONFIG", ""))
     k8s_contexts: list[str] = field(default_factory=lambda: _list("K8S_CONTEXTS", []))
-    simulated_apps: int = field(default_factory=lambda: _int("SIMULATED_APPS", 120))
-    simulated_unhealthy_ratio: float = field(
-        default_factory=lambda: _float("SIMULATED_UNHEALTHY_RATIO", 0.08)
-    )
+    # seed-k8s fallback source (used when no live cluster is reachable)
+    seed_apps: int = field(default_factory=lambda: _int("SEED_APPS", 50))
+    seed_unhealthy_ratio: float = field(default_factory=lambda: _float("SEED_UNHEALTHY_RATIO", 0.08))
+    seed_cluster: str = field(default_factory=lambda: os.getenv("SEED_CLUSTER", "demo-cluster"))
+    seed_namespace: str = field(default_factory=lambda: os.getenv("SEED_NAMESPACE", "demo"))
+    seed_collector_id: str = field(default_factory=lambda: os.getenv("SEED_COLLECTOR_ID", "seed-publisher"))
+    seed_interval_seconds: int = field(default_factory=lambda: _int("SEED_INTERVAL_SECONDS", 5))
 
     # --- consumer ----------------------------------------------------------
     consumer_port: int = field(default_factory=lambda: _int("CONSUMER_PORT", 9150))

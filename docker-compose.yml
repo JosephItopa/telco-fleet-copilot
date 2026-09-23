@@ -32,7 +32,7 @@ services:
       POSTGRES_PASSWORD: aiops
       POSTGRES_DB: aiops
     ports:
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -48,9 +48,11 @@ services:
     environment:
       SERVICE_NAME: collector
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      COLLECTOR_MODE: ${COLLECTOR_MODE:-simulated}
-      CLUSTERS: ${CLUSTERS:-cluster-a,cluster-b,cluster-c}
-      SIMULATED_APPS: ${SIMULATED_APPS:-120}
+      COLLECTOR_MODE: ${COLLECTOR_MODE:-seed}
+      SEED_APPS: ${SEED_APPS:-50}
+      SEED_CLUSTER: ${SEED_CLUSTER:-demo-cluster}
+      SEED_NAMESPACE: ${SEED_NAMESPACE:-demo}
+      SEED_UNHEALTHY_RATIO: ${SEED_UNHEALTHY_RATIO:-0.08}
       COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-15}
     ports:
       - "${COLLECTOR_HOST_PORT:-9100}:9100"
