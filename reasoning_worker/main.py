@@ -13,10 +13,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 
 from common.models import AIAnalysis, Finding, utcnow
 
 from . import catalog, config, reasoner
+from .observations import ObservationStore, build_reports, observations_from_snapshot
 from .store import FindingStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
