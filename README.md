@@ -69,14 +69,26 @@ cp .env.example .env      # set NVIDIA_API_KEY
 docker compose up --build
 ```
 
-Dashboard: http://localhost:8501 · API: http://localhost:8000/docs · Collector:
-http://localhost:9100/status · Consumer: http://localhost:9150/status ·
-Detector: http://localhost:9200/status · Inference: http://localhost:9300/status.
+Dashboard: http://localhost:8501 · API: http://localhost:8000/docs · Inference:
+http://localhost:9300/status.
 
-Scale the fleet:
+The collector, consumer and detector publish **no host ports**, which is what
+lets them scale to any replica count. Inspect them through the API, or use
+`python scripts/stack_status.py`:
 
 ```bash
-docker compose up -d --scale collector=3 --scale consumer=4 --scale detector=4
+curl localhost:8000/collectors/health
+curl localhost:8000/kafka/health
+curl localhost:8000/detectors/status
+```
+
+Scale any fleet — the count is unrestricted because nothing binds a fixed host
+port:
+
+```bash
+docker compose up -d --build --scale detector=5
+docker compose up -d --build --scale consumer=4 --scale detector=4
+docker compose up -d --build --scale collector=3
 ```
 
 The collector defaults to `COLLECTOR_MODE=seed`, which feeds the platform from the

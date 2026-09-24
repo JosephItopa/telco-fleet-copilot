@@ -27,6 +27,8 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # Raised so a scaled detector fleet has connection headroom (default is 100).
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: aiops
       POSTGRES_PASSWORD: aiops
@@ -55,8 +57,12 @@ services:
       SEED_UNHEALTHY_RATIO: ${SEED_UNHEALTHY_RATIO:-0.08}
       SEED_INTERVAL_SECONDS: ${SEED_INTERVAL_SECONDS:-120}
       COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-15}
-    ports:
-      - "${COLLECTOR_HOST_PORT:-9100}:9100"
+    # No host port: lets the fleet scale to any replica count.
+    #   docker compose up -d --build --scale collector=3
+    # The API reaches it at http://collector:9100 across replicas.
+    # For direct host access, uncomment a port range instead (limits scale to the range):
+    # ports:
+    #   - "9100-9109:9100"
     depends_on:
       kafka:
         condition: service_healthy
@@ -71,8 +77,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONSUMER_GROUP: aiops-partition-consumers
       DETECTOR_URL: http://detector:9200
-    ports:
-      - "${CONSUMER_HOST_PORT:-9150}:9150"
+    # No host port: scales to any count (docker compose up -d --scale consumer=4).
     depends_on:
       kafka:
         condition: service_healthy
@@ -89,8 +94,10 @@ services:
       DATABASE_URL: postgresql+psycopg2://aiops:aiops@postgres:5432/aiops
       DETECTION_WINDOW_SECONDS: ${DETECTION_WINDOW_SECONDS:-300}
       INCIDENT_RESOLVE_AFTER_SECONDS: ${INCIDENT_RESOLVE_AFTER_SECONDS:-900}
-    ports:
-      - "${DETECTOR_HOST_PORT:-9200}:9200"
+    # No host port: this is what makes scaling work.
+    #   docker compose up -d --build --scale detector=5
+    # Each replica gets a unique DETECTOR_ID from its container hostname, and the
+    # consumers reach the fleet at http://detector:9200 (round-robined by Docker DNS).
     depends_on:
       postgres:
         condition: service_healthy
