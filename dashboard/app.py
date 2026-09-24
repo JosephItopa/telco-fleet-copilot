@@ -135,7 +135,7 @@ def _render_incidents() -> None:
                 "anomaly": item["anomaly_type"],
                 "observations": item.get("observation_count"),
                 "last_detected": item.get("last_detected"),
-                "ai": (item.get("ai") or {}).get("status"),
+                #"ai": (item.get("ai") or {}).get("status"),
             }
             for item in items
         ]
@@ -179,10 +179,10 @@ def _render_detail(item: dict) -> None:
         st.markdown("**Evidence**")
         st.json(item.get("evidence", []))
     with right:
-        st.markdown("**AI analysis**")
+        st.markdown("**AI Analysis**")
         analysis = item.get("ai")
         if not analysis:
-            st.info("No AI analysis yet.")
+            st.info("No AI Analysis Yet.")
         else:
             status = analysis.get("status")
             if status == "failed":
@@ -190,27 +190,27 @@ def _render_detail(item: dict) -> None:
             if analysis.get("explanation"):
                 st.markdown(f"**Explanation.** {analysis['explanation']}")
             if analysis.get("root_causes"):
-                st.markdown("**Root-cause hypotheses**")
+                st.markdown("**Root-cause Hypotheses**")
                 for cause in analysis["root_causes"]:
                     st.markdown(f"- {cause}")
             if analysis.get("remediation"):
-                st.markdown("**Recommended remediation**")
+                st.markdown("**Recommended Remediation**")
                 for index, step in enumerate(analysis["remediation"], start=1):
                     st.markdown(f"{index}. {step}")
             if analysis.get("next_action"):
-                st.markdown(f"**Next diagnostic action.** {analysis['next_action']}")
+                st.markdown(f"**Next Diagnostic Action.** {analysis['next_action']}")
             if analysis.get("confidence") is not None:
                 st.progress(float(analysis["confidence"]), text=f"Confidence: {float(analysis['confidence']):.0%}")
             st.caption(f"model={analysis.get('model')} latency={analysis.get('latency_seconds')}s")
 
-    if st.button(f"Analyze {item['incident_id']} with AI", key=f"analyze-{item['incident_id']}"):
-        with st.spinner("Calling the inference service..."):
-            try:
-                result = api.analyze(item["incident_id"])
-                st.success("Analysis complete.")
-                st.json(result.get("ai"))
-            except api.ApiError as exc:
-                st.error(str(exc))
+        if st.button(f"Analyze {item['incident_id']} with AI", key=f"analyze-{item['incident_id']}"):
+            with st.spinner("Calling the inference service..."):
+                try:
+                    result = api.analyze(item["incident_id"])
+                    st.success("Analysis complete.")
+                    st.json(result.get("ai"))
+                except api.ApiError as exc:
+                    st.error(str(exc))
 
 
 def _render_content() -> None:
