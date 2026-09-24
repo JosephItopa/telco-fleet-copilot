@@ -77,3 +77,24 @@ def test_k8s_source_probe_raises_without_a_cluster():
     except Exception:
         return
     raise AssertionError("verify() should fail when no cluster is reachable")
+
+
+def test_seed_mode_publishes_on_the_120s_seed_interval(monkeypatch):
+    monkeypatch.setattr(
+        collector_main,
+        "settings",
+        _settings(seed_interval_seconds=120, collect_interval_seconds=15),
+    )
+
+    collector_main.state.source_mode = "seed"
+    assert collector_main.effective_interval_seconds() == 120
+
+    # A live cluster keeps the faster collector cadence.
+    collector_main.state.source_mode = "k8s"
+    assert collector_main.effective_interval_seconds() == 15
+
+
+def test_seed_interval_default_is_120_seconds():
+    from config.settings import settings
+
+    assert settings.seed_interval_seconds == 120

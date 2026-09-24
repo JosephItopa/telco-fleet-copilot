@@ -140,16 +140,20 @@ def _render_incidents() -> None:
             for item in items
         ]
     )
-    st.dataframe(table, hide_index=True, width="stretch")
+    event = st.dataframe(
+        table,
+        hide_index=True,
+        width="stretch",
+        on_select="rerun",
+        selection_mode="single-row",
+        key="recent-incidents",
+    )
+    selected_rows = event.selection.rows if event and event.selection else []
+    if not selected_rows:
+        st.caption("Select a row to see its evidence and AI analysis.")
+        return
 
-    options = {item["incident_id"]: item for item in items}
-    labels = {
-        key: f"{key} | {item['severity']} | {item['app_id']} | {item['anomaly_type']}"
-        for key, item in options.items()
-    }
-    choice = st.selectbox("Inspect incident", options=list(options), format_func=lambda key: labels[key])
-    if choice:
-        _render_detail(options[choice])
+    _render_detail(items[selected_rows[0]])
 
 
 def _render_detail(item: dict) -> None:
