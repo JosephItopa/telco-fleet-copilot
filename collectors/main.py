@@ -119,10 +119,23 @@ async def connect_kafka() -> None:
             await asyncio.sleep(5)
 
 
+def effective_interval_seconds() -> int:
+    """Seed data publishes on its own fixed cadence; a live cluster uses the
+    collector interval."""
+    return settings.seed_interval_seconds if state.source_mode == "seed" else settings.collect_interval_seconds
+
+
 async def collect_loop() -> None:
     global source
     source, state.source_mode = build_source()
-    logger.info("collector source selected", extra={"mode": state.source_mode, "fallback_reason": state.fallback_reason})
+    logger.info(
+        "collector source selected",
+        extra={
+            "mode": state.source_mode,
+            "interval_seconds": effective_interval_seconds(),
+            "fallback_reason": state.fallback_reason,
+        },
+    )
     while True:
         cycle_start = time.perf_counter()
         try:
@@ -136,7 +149,7 @@ async def collect_loop() -> None:
             logger.error("collection failed", extra={"mode": state.source_mode, "error": str(exc)})
             if state.source_mode == "k8s":
                 use_seed_fallback(str(exc))
-            await asyncio.sleep(settings.collect_interval_seconds)
+            await asyncio.sleep(effective_interval_seconds())
             continue
 
         try:
@@ -154,7 +167,7 @@ async def collect_loop() -> None:
             state.kafka_connected = False
             state.last_error = str(exc)
             logger.error("publish failed", extra={"error": str(exc)})
-        await asyncio.sleep(settings.collect_interval_seconds)
+        await asyncio.sleep(effective_interval_seconds())
 
 
 @asynccontextmanager
@@ -219,7 +232,9 @@ def status() -> dict[str, Any]:
         "failures": state.failures,
         "last_cycle_at": state.last_cycle_at,
         "last_error": state.last_error,
-        "interval_seconds": settings.collect_interval_seconds,
+        "interval_seconds": effective_interval_seconds(),
+        "collect_interval_seconds": settings.collect_interval_seconds,
+        "seed_interval_seconds": settings.seed_interval_seconds,
     }
 
 

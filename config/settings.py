@@ -85,7 +85,8 @@ class Settings:
     seed_cluster: str = field(default_factory=lambda: os.getenv("SEED_CLUSTER", "demo-cluster"))
     seed_namespace: str = field(default_factory=lambda: os.getenv("SEED_NAMESPACE", "demo"))
     seed_collector_id: str = field(default_factory=lambda: os.getenv("SEED_COLLECTOR_ID", "seed-publisher"))
-    seed_interval_seconds: int = field(default_factory=lambda: _int("SEED_INTERVAL_SECONDS", 5))
+    # The seed publishes on a fixed 120s cadence, in the collector and standalone.
+    seed_interval_seconds: int = field(default_factory=lambda: _int("SEED_INTERVAL_SECONDS", 120))
 
     # --- consumer ----------------------------------------------------------
     consumer_port: int = field(default_factory=lambda: _int("CONSUMER_PORT", 9150))

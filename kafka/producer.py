@@ -18,8 +18,9 @@ def build_producer() -> AIOKafkaProducer:
     return AIOKafkaProducer(
         bootstrap_servers=settings.kafka_bootstrap_servers,
         acks="all",
+        # Idempotent delivery. aiokafka enforces max in-flight requests itself,
+        # there is no max_in_flight_requests_per_connection parameter.
         enable_idempotence=True,
-        max_in_flight_requests_per_connection=1,
         retry_backoff_ms=500,
         linger_ms=settings.kafka_linger_ms,
         max_batch_size=settings.kafka_max_batch_size,
