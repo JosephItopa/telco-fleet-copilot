@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# .env is authoritative: a stale variable exported in the shell must not shadow
+# the project configuration. Tests set AIOPS_SKIP_DOTENV=1 and provide their own
+# environment (for example a SQLite database URL).
+if not os.getenv("AIOPS_SKIP_DOTENV"):
+    load_dotenv(override=True)
 
 
 def _int(name: str, default: int) -> int:
@@ -114,6 +118,8 @@ class Settings:
     # --- api ---------------------------------------------------------------
     api_port: int = field(default_factory=lambda: _int("API_PORT", 8000))
     inference_url: str = field(default_factory=lambda: os.getenv("INFERENCE_URL", "http://localhost:9300"))
+    # The API calls inference synchronously; allow for model reasoning time.
+    inference_timeout_seconds: float = field(default_factory=lambda: _float("INFERENCE_TIMEOUT_SECONDS", 300))
     collector_url: str = field(default_factory=lambda: os.getenv("COLLECTOR_URL", "http://localhost:9100"))
     consumer_url: str = field(default_factory=lambda: os.getenv("CONSUMER_URL", "http://localhost:9150"))
 
@@ -125,12 +131,17 @@ class Settings:
     )
     nvidia_models: list[str] = field(
         default_factory=lambda: _list(
-            "NVIDIA_MODELS", ["glm-5-3", "glm-5-3-flash", "kimi-k3", "muse-glimmer-30b"]
+            "NVIDIA_MODELS",
+            ["z-ai/glm-5.3", "z-ai/glm-5.3-flash", "moonshotai/kimi-k3", "meta/muse-glimmer-30b"],
         )
     )
     model_failure_threshold: int = field(default_factory=lambda: _int("MODEL_FAILURE_THRESHOLD", 3))
-    llm_timeout_seconds: float = field(default_factory=lambda: _float("LLM_TIMEOUT_SECONDS", 60))
-    llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 2048))
+    # Reasoning models think before answering; a full evidence prompt can take
+    # well over a minute, so this must be generous.
+    llm_timeout_seconds: float = field(default_factory=lambda: _float("LLM_TIMEOUT_SECONDS", 240))
+    # Reasoning models spend tokens on the thinking channel before the answer,
+    # so this needs headroom or `content` comes back empty.
+    llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 4096))
     llm_temperature: float = field(default_factory=lambda: _float("LLM_TEMPERATURE", 0.2))
 
     # --- dashboard ---------------------------------------------------------

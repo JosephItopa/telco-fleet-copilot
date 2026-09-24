@@ -143,7 +143,17 @@ async def call_model(model: str, messages: list[dict[str, Any]]) -> str:
         max_tokens=settings.llm_max_tokens,
         stream=False,
     )
-    return completion.choices[0].message.content or ""
+    message = completion.choices[0].message
+    content = message.content or ""
+    if not content.strip():
+        reasoning = getattr(message, "reasoning_content", None)
+        detail = (
+            "the model spent its whole token budget on the thinking channel"
+            if reasoning
+            else "the model returned an empty message"
+        )
+        raise RuntimeError(f"{model}: no content returned ({detail}); increase LLM_MAX_TOKENS")
+    return content
 
 
 def build_router() -> ModelRouter:

@@ -195,7 +195,7 @@ async def analyze_incident(incident_id: str, force: bool = False) -> dict[str, A
     history = list_incidents(app_id=incident["app_id"], limit=20)
     payload = {"incident": incident, "history": history}
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=settings.inference_timeout_seconds) as client:
             response = await client.post(f"{settings.inference_url.rstrip('/')}/analyze", json=payload)
             response.raise_for_status()
             analysis = response.json()

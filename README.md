@@ -148,11 +148,31 @@ inference service. The inference service proposes only what the evidence support
 next diagnostic action) and cannot invent telemetry.
 
 Model routing (`inference/router.py`) uses a **sticky active model** across
-`NVIDIA_MODELS` (default `glm-5-3, glm-5-3-flash, kimi-k3, muse-glimmer-30b`).
+`NVIDIA_MODELS` (default `z-ai/glm-5.3, z-ai/glm-5.3-flash, moonshotai/kimi-k3, meta/muse-glimmer-30b`).
 The active model is retried `MODEL_FAILURE_THRESHOLD` times (default 3). Only
 after all three trials fail is it marked unhealthy and the next model selected; a
 model that keeps succeeding is never switched away from. Set the exact NVIDIA
 model IDs in `NVIDIA_MODELS` if your account exposes different names.
+
+These are reasoning models: a full evidence prompt can take 1-3 minutes because the
+model fills a thinking channel before answering. `LLM_TIMEOUT_SECONDS=240` gives it
+room, and `LLM_MAX_TOKENS=4096` leaves headroom for thinking plus the JSON answer
+(too small a budget returns an empty `content`). The API waits up to
+`INFERENCE_TIMEOUT_SECONDS` (300) for the inference service.
+
+### Troubleshooting model access
+
+`.env` is authoritative for the services (`load_dotenv(override=True)`), but
+exported shell variables still win over `.env` for Compose `${...}` substitutions.
+If model calls fail with `404 page not found`, check for a stale export:
+
+```bash
+env | grep -E 'NVIDIA_|LLM_'      # stale NVIDIA_MODELS / LLM_TIMEOUT_SECONDS?
+unset NVIDIA_MODELS LLM_TIMEOUT_SECONDS LLM_MAX_TOKENS
+docker compose up -d --build
+```
+
+`curl localhost:9300/status` shows the active model and per-model error counts.
 
 ## API endpoints
 

@@ -1,6 +1,9 @@
 import os
 import tempfile
 
+# Tests provide their own environment and must not inherit .env.
+os.environ["AIOPS_SKIP_DOTENV"] = "1"
+
 # Must be set before any service module imports config.settings.
 _TMP_DIR = tempfile.mkdtemp(prefix="aiops-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DIR}/test.db"

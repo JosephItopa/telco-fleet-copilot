@@ -1,5 +1,13 @@
 name: telco-fleet-copilot
 
+# Application services load configuration from .env via env_file, so a stale
+# variable exported in your shell can no longer shadow .env. Only values that are
+# specific to the compose network (service DNS names) are set inline; inline
+# `environment` values always win over env_file.
+#
+# Reminder: exported shell variables still take precedence over .env for the
+# ${...} substitutions below (host ports), so `unset` any stale ones.
+
 services:
   kafka:
     image: apache/kafka:3.7.0
@@ -34,7 +42,7 @@ services:
       POSTGRES_PASSWORD: aiops
       POSTGRES_DB: aiops
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -47,16 +55,9 @@ services:
     build:
       context: .
       dockerfile: collectors/Dockerfile
+    env_file: .env
     environment:
       SERVICE_NAME: collector
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      COLLECTOR_MODE: ${COLLECTOR_MODE:-seed}
-      SEED_APPS: ${SEED_APPS:-50}
-      SEED_CLUSTER: ${SEED_CLUSTER:-demo-cluster}
-      SEED_NAMESPACE: ${SEED_NAMESPACE:-demo}
-      SEED_UNHEALTHY_RATIO: ${SEED_UNHEALTHY_RATIO:-0.08}
-      SEED_INTERVAL_SECONDS: ${SEED_INTERVAL_SECONDS:-120}
-      COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-15}
     # No host port: lets the fleet scale to any replica count.
     #   docker compose up -d --build --scale collector=3
     # The API reaches it at http://collector:9100 across replicas.
@@ -66,16 +67,14 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    # Scale the fleet: docker compose up --scale collector=3
 
   consumer:
     build:
       context: .
       dockerfile: consumers/Dockerfile
+    env_file: .env
     environment:
       SERVICE_NAME: consumer
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_CONSUMER_GROUP: aiops-partition-consumers
       DETECTOR_URL: http://detector:9200
     # No host port: scales to any count (docker compose up -d --scale consumer=4).
     depends_on:
@@ -83,17 +82,15 @@ services:
         condition: service_healthy
       detector:
         condition: service_started
-    # Scale the group: docker compose up --scale consumer=3
 
   detector:
     build:
       context: .
       dockerfile: detectors/Dockerfile
+    env_file: .env
     environment:
       SERVICE_NAME: detector
       DATABASE_URL: postgresql+psycopg2://aiops:aiops@postgres:5432/aiops
-      DETECTION_WINDOW_SECONDS: ${DETECTION_WINDOW_SECONDS:-300}
-      INCIDENT_RESOLVE_AFTER_SECONDS: ${INCIDENT_RESOLVE_AFTER_SECONDS:-900}
     # No host port: this is what makes scaling work.
     #   docker compose up -d --build --scale detector=5
     # Each replica gets a unique DETECTOR_ID from its container hostname, and the
@@ -101,20 +98,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Scale the fleet: docker compose up --scale detector=3
 
   inference:
     build:
       context: .
       dockerfile: inference/Dockerfile
+    env_file: .env
     environment:
       SERVICE_NAME: inference
-      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
-      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
-      NVIDIA_MODELS: ${NVIDIA_MODELS:-glm-5-3,glm-5-3-flash,kimi-k3,muse-glimmer-30b}
-      MODEL_FAILURE_THRESHOLD: ${MODEL_FAILURE_THRESHOLD:-3}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
     ports:
       - "${INFERENCE_HOST_PORT:-9300}:9300"
 
@@ -122,6 +113,7 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
+    env_file: .env
     environment:
       SERVICE_NAME: api
       DATABASE_URL: postgresql+psycopg2://aiops:aiops@postgres:5432/aiops
@@ -141,9 +133,10 @@ services:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
+    env_file: .env
     environment:
+      SERVICE_NAME: dashboard
       API_URL: http://api:8000
-      DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-15}
     ports:
       - "${DASHBOARD_HOST_PORT:-8501}:8501"
     depends_on:

@@ -15,9 +15,10 @@ data:
   DETECTION_WINDOW_SECONDS: "300"
   INCIDENT_RESOLVE_AFTER_SECONDS: "900"
   NVIDIA_BASE_URL: "https://integrate.api.nvidia.com/v1"
-  NVIDIA_MODELS: "glm-5-3,glm-5-3-flash,kimi-k3,muse-glimmer-30b"
+  NVIDIA_MODELS: "z-ai/glm-5.3,z-ai/glm-5.3-flash,moonshotai/kimi-k3,meta/muse-glimmer-30b"
   MODEL_FAILURE_THRESHOLD: "3"
-  LLM_TIMEOUT_SECONDS: "60"
+  LLM_TIMEOUT_SECONDS: "240"
+  LLM_MAX_TOKENS: "4096"
   LOG_LEVEL: "INFO"
 ---
 apiVersion: v1
