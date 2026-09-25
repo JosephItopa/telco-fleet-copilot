@@ -25,7 +25,7 @@ st.caption("Kubernetes-native telemetry: collectors -> Kafka -> consumers -> det
 with st.sidebar:
     st.header("Controls")
     auto_refresh = st.toggle("Auto refresh", value=True, help=f"Refreshes every {REFRESH_SECONDS}s")
-    severity_filter = st.multiselect("Severity", SEVERITY_ORDER, default=SEVERITY_ORDER)
+    severity_filter = st.multiselect("severity", SEVERITY_ORDER, default=SEVERITY_ORDER)
     status_filter = st.multiselect("Incident status", ["NEW", "ONGOING", "RESOLVED"], default=["NEW", "ONGOING"])
     if st.button("Refresh Now", width="stretch"):
         st.rerun()
@@ -95,16 +95,16 @@ def _render_overview() -> None:
     chart_cols = st.columns(3)
     with chart_cols[0]:
         st.subheader("Incidents by Severity")
-        st.bar_chart(_severity_chart(anomalies), x="Severity", y="Count")
+        st.bar_chart(_severity_chart(anomalies), x="severity", y="count")
     with chart_cols[1]:
         st.subheader("Incidents by Application")
-        st.bar_chart(_count_chart(anomalies, "app_id", "application"), x="Application", y="Count")
+        st.bar_chart(_count_chart(anomalies, "app_id", "application"), x="application", y="count")
     with chart_cols[2]:
         st.subheader("Incidents by Cluster")
-        st.bar_chart(_count_chart(anomalies, "cluster_id", "cluster"), x="Cluster", y="Count")
+        st.bar_chart(_count_chart(anomalies, "cluster_id", "cluster"), x="cluster", y="count")
 
     st.subheader("Incident Timeline")
-    st.line_chart(_timeline(anomalies), x="Time", y="Incidents")
+    st.line_chart(_timeline(anomalies), x="time", y="incidents")
 
     activity = detectors.get("detectors", [])
     if activity:
