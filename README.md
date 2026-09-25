@@ -199,7 +199,7 @@ docker compose up -d --build
 ## Tests
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements.txt
 pytest -q
 ```
 

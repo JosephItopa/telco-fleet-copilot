@@ -27,6 +27,17 @@ router = build_router()
 app = FastAPI(title="AIOps AI Inference", version="1.0.0")
 
 
+def _openai_available() -> bool:
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+OPENAI_AVAILABLE = _openai_available()
+
+
 class AnalyzeRequest(BaseModel):
     incident: dict[str, Any]
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -35,6 +46,11 @@ class AnalyzeRequest(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     mark_up("inference")
+    if not OPENAI_AVAILABLE:
+        logger.error(
+            "the 'openai' package is missing from this image; every AI call will fail. "
+            "Rebuild inference with: docker compose up -d --build --force-recreate inference"
+        )
     logger.info("inference started", extra={"models": settings.nvidia_models, "active": router.active_model})
 
 
@@ -69,6 +85,11 @@ async def analyze(request: AnalyzeRequest) -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001 - report failure, never crash the caller
         logger.error("analysis failed", extra={"error": str(exc)})
+        attempts = getattr(exc, "attempts", None) or attempts
+        if not attempts:
+            attempts = [
+                {"model": router.active_model, "trial": 0, "outcome": "failure", "error": str(exc)[:300]}
+            ]
         analysis = AIAnalysis(
             status=AIStatus.FAILED,
             provider="nvidia",
@@ -95,6 +116,7 @@ def status() -> dict[str, Any]:
     return {
         "service": "inference",
         "configured": bool(settings.nvidia_api_key) and not settings.nvidia_api_key.startswith("your_"),
+        "openai_installed": OPENAI_AVAILABLE,
         "provider": "nvidia",
         "base_url": settings.nvidia_base_url,
         **router.snapshot(),

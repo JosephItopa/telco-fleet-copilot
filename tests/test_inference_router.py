@@ -66,3 +66,56 @@ def test_all_models_failing_raises_and_rotates_through_list():
     except Exception as exc:  # noqa: BLE001
         assert "all configured models failed" in str(exc).lower() or "down" in str(exc).lower()
     assert {state.healthy for state in router.states} == {False}
+
+
+def test_zero_threshold_is_clamped_and_still_attempts_models():
+    """A threshold below 1 must not silently skip every trial."""
+    calls: list[str] = []
+
+    async def call(model: str, _messages: list[dict]) -> str:
+        calls.append(model)
+        raise RuntimeError("unreachable")
+
+    router = ModelRouter(models=["m1", "m2"], failure_threshold=0, call=call, timeout_seconds=5)
+    try:
+        asyncio.run(router.generate(messages()))
+        raise AssertionError("expected failure")
+    except Exception as exc:  # noqa: BLE001
+        attempts = getattr(exc, "attempts", []) or []
+
+    assert router.failure_threshold >= 1
+    assert calls == ["m1", "m2"], "each model should be attempted at least once"
+    assert len(attempts) >= 2, "the failure must carry an attempt trail"
+    assert all("error" in attempt for attempt in attempts)
+
+
+def test_no_models_configured_reports_clearly():
+    async def call(_model: str, _messages: list[dict]) -> str:
+        return "{}"
+
+    router = ModelRouter(models=[], failure_threshold=3, call=call, timeout_seconds=5)
+    try:
+        asyncio.run(router.generate(messages()))
+        raise AssertionError("expected failure")
+    except Exception as exc:  # noqa: BLE001
+        assert "no models configured" in str(exc)
+        assert getattr(exc, "attempts", []), "even this failure must carry an attempt entry"
+
+
+def test_inference_failure_carries_attempts(monkeypatch):
+    """The service must never return attempts: [] for a failure."""
+    from inference import main as inference_main
+    from inference.router import ModelUnavailable
+
+    class FailingRouter:
+        active_model = "z-ai/glm-5.3"
+
+        async def generate(self, _messages):
+            raise ModelUnavailable("all configured models failed after retries")
+
+    monkeypatch.setattr(inference_main, "router", FailingRouter())
+    request = inference_main.AnalyzeRequest(incident={"incident_id": "INC-X", "app_id": "demo-app-001"}, history=[])
+    result = asyncio.run(inference_main.analyze(request))
+
+    assert result["status"] == "failed"
+    assert result["attempts"], "a failed analysis must explain why each model failed"

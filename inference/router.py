@@ -57,6 +57,9 @@ class ModelRouter:
     def __post_init__(self) -> None:
         if not self.states:
             self.states = [ModelState(name=name) for name in self.models]
+        # A threshold below 1 means no trial would ever run, which looks exactly
+        # like "all models failed" while never contacting a model. Clamp it.
+        self.failure_threshold = max(1, int(self.failure_threshold))
 
     @property
     def active_model(self) -> str:
@@ -74,6 +77,12 @@ class ModelRouter:
     ) -> tuple[str, str, list[dict[str, Any]], float]:
         """Return (model, text, attempts, latency_seconds)."""
         attempts: list[dict[str, Any]] = []
+        if not self.states:
+            error = ModelUnavailable("no models configured; set NVIDIA_MODELS")
+            error.attempts = [
+                {"model": "", "trial": 0, "outcome": "failure", "error": "no models configured"}
+            ]
+            raise error
         for _ in range(len(self.states)):
             state = self.states[self.active_index]
             for trial in range(1, self.failure_threshold + 1):
@@ -116,7 +125,13 @@ class ModelRouter:
                 extra={"failed_model": previous, "next_model": self.active_model, "threshold": self.failure_threshold},
             )
 
-        raise ModelUnavailable("all configured models failed after retries")
+        error = ModelUnavailable(
+            f"all configured models failed after retries (threshold={self.failure_threshold} trials/model)"
+        )
+        error.attempts = attempts or [
+            {"model": self.active_model, "trial": 0, "outcome": "failure", "error": "no trials executed"}
+        ]
+        raise error
 
 
 def build_client() -> Any:

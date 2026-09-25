@@ -156,6 +156,56 @@ def _render_incidents() -> None:
     _render_detail(items[selected_rows[0]])
 
 
+def _render_evidence(evidence: list[dict]) -> None:
+    """Evidence is shown as raw JSON."""
+    if not evidence:
+        st.caption("No evidence recorded.")
+        return
+    st.json(evidence)
+
+
+def _render_analysis(analysis: dict | None) -> None:
+    """Render the AI result as text, not a JSON blob."""
+    if not analysis:
+        st.info("No AI analysis yet. Run 'Analyze with AI' below.")
+        return
+
+    status = analysis.get("status")
+    if status == "failed":
+        st.error(f"AI analysis failed: {analysis.get('error') or 'unknown error'}")
+    elif status == "pending":
+        st.info("Reasoning in progress.")
+
+    if analysis.get("explanation"):
+        st.markdown(f"**Explanation.** {analysis['explanation']}")
+    if analysis.get("evidence"):
+        st.markdown("**Evidence used by the model**")
+        for item in analysis["evidence"]:
+            st.markdown(f"- {item}")
+    if analysis.get("root_causes"):
+        st.markdown("**Root-cause hypotheses**")
+        for cause in analysis["root_causes"]:
+            st.markdown(f"- {cause}")
+    if analysis.get("remediation"):
+        st.markdown("**Recommended remediation**")
+        for index, step in enumerate(analysis["remediation"], start=1):
+            st.markdown(f"{index}. {step}")
+    if analysis.get("next_action"):
+        st.markdown(f"**Next diagnostic action.** {analysis['next_action']}")
+
+    confidence = analysis.get("confidence")
+    if confidence is not None and status != "pending":
+        st.progress(min(1.0, max(0.0, float(confidence))), text=f"Confidence: {float(confidence):.0%}")
+
+    attempts = analysis.get("attempts") or []
+    if attempts:
+        with st.expander(f"Model attempts ({len(attempts)}) - why each model failed"):
+            st.dataframe(pd.DataFrame(attempts), hide_index=True, width="stretch")
+
+    if analysis.get("model") or analysis.get("latency_seconds") is not None:
+        st.caption(f"model={analysis.get('model')} latency={analysis.get('latency_seconds')}s")
+
+
 def _render_detail(item: dict) -> None:
     st.divider()
     header = st.columns([3, 1])
@@ -177,38 +227,17 @@ def _render_detail(item: dict) -> None:
     left, right = st.columns(2)
     with left:
         st.markdown("**Evidence**")
-        st.json(item.get("evidence", []))
+        _render_evidence(item.get("evidence", []))
     with right:
         st.markdown("**AI Analysis**")
-        analysis = item.get("ai")
-        if not analysis:
-            st.info("No AI Analysis Yet.")
-        else:
-            status = analysis.get("status")
-            if status == "failed":
-                st.warning(f"AI analysis failed: {analysis.get('error')}")
-            if analysis.get("explanation"):
-                st.markdown(f"**Explanation.** {analysis['explanation']}")
-            if analysis.get("root_causes"):
-                st.markdown("**Root-cause Hypotheses**")
-                for cause in analysis["root_causes"]:
-                    st.markdown(f"- {cause}")
-            if analysis.get("remediation"):
-                st.markdown("**Recommended Remediation**")
-                for index, step in enumerate(analysis["remediation"], start=1):
-                    st.markdown(f"{index}. {step}")
-            if analysis.get("next_action"):
-                st.markdown(f"**Next Diagnostic Action.** {analysis['next_action']}")
-            if analysis.get("confidence") is not None:
-                st.progress(float(analysis["confidence"]), text=f"Confidence: {float(analysis['confidence']):.0%}")
-            st.caption(f"model={analysis.get('model')} latency={analysis.get('latency_seconds')}s")
+        _render_analysis(item.get("ai"))
 
         if st.button(f"Analyze {item['incident_id']} with AI", key=f"analyze-{item['incident_id']}"):
-            with st.spinner("Calling the inference service..."):
+            with st.spinner("Calling the inference service (reasoning models can take 1-3 minutes)..."):
                 try:
                     result = api.analyze(item["incident_id"])
                     st.success("Analysis complete.")
-                    st.json(result.get("ai"))
+                    _render_analysis(result.get("ai"))
                 except api.ApiError as exc:
                     st.error(str(exc))
 
