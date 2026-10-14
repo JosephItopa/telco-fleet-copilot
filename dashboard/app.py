@@ -242,12 +242,46 @@ def _render_detail(item: dict) -> None:
                     st.error(str(exc))
 
 
+METRIC_FIELDS = (
+    ("Impacted namespaces", "impacted_namespaces"),
+    ("Open incidents", "open_incidents"),
+    ("Criticals", "criticals"),
+    ("Affected pods", "affected_pods"),
+)
+
+
+def _inject_styles() -> None:
+    """Light styling so metric cards read as cards, not bare numbers."""
+    st.markdown(
+        """
+        <style>
+          div[data-testid="stMetric"] {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 10px;
+            padding: 10px 14px;
+          }
+          div[data-testid="stMetricLabel"] { opacity: 0.75; font-size: 0.80rem; }
+          div[data-testid="stMetricValue"] { font-size: 1.55rem; }
+          div[data-testid="stVerticalBlock"] { gap: 0.6rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _metric_row(metrics: dict) -> None:
-    cols = st.columns(4)
-    cols[0].metric("Impacted namespaces", metrics.get("impacted_namespaces", 0))
-    cols[1].metric("Open incidents", metrics.get("open_incidents", 0))
-    cols[2].metric("Criticals", metrics.get("criticals", 0))
-    cols[3].metric("Affected pods", metrics.get("affected_pods", 0))
+    cols = st.columns(len(METRIC_FIELDS))
+    for col, (label, key) in zip(cols, METRIC_FIELDS):
+        col.metric(label, metrics.get(key, 0))
+
+
+def _metric_card(title: str, caption: str, metrics: dict) -> None:
+    with st.container(border=True):
+        st.markdown(f"##### {title}")
+        st.caption(caption)
+        for label, key in METRIC_FIELDS:
+            st.metric(label, metrics.get(key, 0))
 
 
 def _render_incident_metrics() -> None:
@@ -257,24 +291,31 @@ def _render_incident_metrics() -> None:
         st.error(f"Could not load incident metrics: {exc}")
         return
 
+    workbench = data.get("workbench", {})
     st.subheader("Incident Workbench")
     st.caption("Currently open incidents across all monitored namespaces.")
-    _metric_row(data.get("workbench", {}))
+    with st.container(border=True):
+        _metric_row(workbench)
+        criticals = workbench.get("criticals", 0)
+        if criticals:
+            st.error(f"{criticals} critical incident(s) currently open.")
+        else:
+            st.success("No critical incidents open.")
 
-    st.subheader("Daily Report")
-    st.caption("Incidents active in the last 24 hours.")
-    _metric_row(data.get("daily", {}))
-
-    st.subheader("Weekly Report")
-    st.caption("Incidents active in the last 7 days.")
-    _metric_row(data.get("weekly", {}))
-
-    st.subheader("Monthly Report")
-    st.caption("Incidents active in the last 30 days.")
-    _metric_row(data.get("monthly", {}))
+    st.subheader("Reports")
+    st.caption("Incident totals per period, based on incident activity (last_detected).")
+    periods = (
+        ("Daily Report", "Active in the last 24 hours.", data.get("daily", {})),
+        ("Weekly Report", "Active in the last 7 days.", data.get("weekly", {})),
+        ("Monthly Report", "Active in the last 30 days.", data.get("monthly", {})),
+    )
+    for column, (title, caption, metrics) in zip(st.columns(len(periods)), periods):
+        with column:
+            _metric_card(title, caption, metrics)
 
 
 def _render_content() -> None:
+    _inject_styles()
     _render_overview()
     st.divider()
     _render_incident_metrics()
