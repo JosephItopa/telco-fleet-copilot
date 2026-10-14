@@ -176,7 +176,7 @@ docker compose up -d --build
 
 ## API endpoints
 
-`GET /summary`, `GET /incidents`, `GET /anomalies/current`,
+`GET /summary`, `GET /metrics/incidents`, `GET /incidents`, `GET /anomalies/current`,
 `GET /incidents/{id}`, `GET /incidents/{id}/timeline`, `GET /incidents/history`,
 `GET /applications/health`, `GET /clusters/health`, `GET /detectors/status`,
 `GET /kafka/health`, `GET /collectors/health`, `POST /incidents/{id}/analyze`,

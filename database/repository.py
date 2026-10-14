@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from config.settings import settings
 from database.models import ApplicationRow, IncidentRow
 from database.session import session_scope
-from models.schema import SEVERITY_RANK, AnomalyType, IncidentStatus
+from models.schema import SEVERITY_RANK, AnomalyType, IncidentStatus, Severity
 
 
 def _now() -> datetime:
@@ -245,6 +245,52 @@ def attach_ai(incident_id: str, analysis: dict[str, Any], remediation: str | Non
         row.updated_at = _now()
         session.flush()
         return row_to_dict(row)
+
+
+def incident_metrics(
+    window_hours: float | None = None,
+    only_open: bool = False,
+    namespace: str | None = None,
+) -> dict[str, Any]:
+    """Incident counts for a window (activity-based, by last_detected).
+
+    ``window_hours=None`` means all time; ``only_open`` restricts to incidents
+    that are not RESOLVED. Affected pods are read from the stored evidence.
+    """
+    with session_scope() as session:
+        stmt = select(IncidentRow)
+        if window_hours is not None:
+            stmt = stmt.where(IncidentRow.last_detected >= _now() - timedelta(hours=window_hours))
+        if only_open:
+            stmt = stmt.where(IncidentRow.status != IncidentStatus.RESOLVED.value)
+        if namespace:
+            stmt = stmt.where(IncidentRow.namespace == namespace)
+        rows = session.execute(stmt).scalars().all()
+
+    namespaces = {row.namespace for row in rows if row.namespace}
+    pods: set[str] = set()
+    for row in rows:
+        for entry in row.evidence or []:
+            pod = (entry or {}).get("pod")
+            if pod:
+                pods.add(str(pod))
+
+    return {
+        "impacted_namespaces": len(namespaces),
+        "open_incidents": sum(1 for row in rows if row.status != IncidentStatus.RESOLVED.value),
+        "criticals": sum(1 for row in rows if row.severity == Severity.CRITICAL.value),
+        "affected_pods": len(pods),
+        "incidents": len(rows),
+    }
+
+
+def incident_metrics_report() -> dict[str, Any]:
+    return {
+        "workbench": incident_metrics(only_open=True),
+        "daily": incident_metrics(window_hours=24),
+        "weekly": incident_metrics(window_hours=24 * 7),
+        "monthly": incident_metrics(window_hours=24 * 30),
+    }
 
 
 def counts_by(column: str, status: str | None = None) -> dict[str, int]:

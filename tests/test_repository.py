@@ -74,3 +74,54 @@ def test_attach_ai_and_summary():
 
     totals = summary()
     assert totals["applications_monitored"] >= 1
+
+
+def test_incident_metrics_scopes():
+    from database.models import IncidentRow
+    from database.repository import incident_metrics, incident_metrics_report
+    from database.session import session_scope
+    from sqlalchemy import select
+
+    init_db()
+    namespace = "ns-metrics-unique-1"
+    record_observations(
+        [
+            {
+                "fingerprint": "fp-metrics-1",
+                "app_id": "app-metrics-1",
+                "cluster_id": "cluster-metrics",
+                "namespace": namespace,
+                "detector_id": "detector-1",
+                "kafka_partition": 1,
+                "anomaly_type": "unavailable_replicas",
+                "metric": "deployment_replicas",
+                "severity": "critical",
+                "evidence": [{"metric_type": "deployment_replicas", "pod": "app-metrics-1-pod-a", "metrics": {}}],
+            }
+        ]
+    )
+
+    workbench = incident_metrics(only_open=True, namespace=namespace)
+    assert workbench["impacted_namespaces"] == 1
+    assert workbench["open_incidents"] == 1
+    assert workbench["criticals"] == 1
+    assert workbench["affected_pods"] == 1
+
+    # Resolve it: the workbench drops it, the daily report still includes it.
+    with session_scope() as session:
+        row = session.execute(
+            select(IncidentRow).where(IncidentRow.fingerprint == "fp-metrics-1")
+        ).scalars().first()
+        row.status = "RESOLVED"
+
+    assert incident_metrics(only_open=True, namespace=namespace)["open_incidents"] == 0
+    daily = incident_metrics(window_hours=24, namespace=namespace)
+    assert daily["incidents"] == 1
+    assert daily["open_incidents"] == 0
+    assert daily["criticals"] == 1
+    assert daily["affected_pods"] == 1
+
+    report = incident_metrics_report()
+    assert set(report) == {"workbench", "daily", "weekly", "monthly"}
+    for scope in report.values():
+        assert {"impacted_namespaces", "open_incidents", "criticals", "affected_pods"} <= set(scope)

@@ -78,13 +78,13 @@ def _render_overview() -> None:
         return
 
     kpis = st.columns(6)
-    kpis[0].metric("Applications monitored", summary.get("applications_monitored", 0))
-    kpis[1].metric("Healthy applications", summary.get("applications_healthy", 0))
-    kpis[2].metric("Applications with anomalies", summary.get("applications_with_anomalies", 0))
-    kpis[3].metric("Active incidents", summary.get("incidents_active", 0))
-    kpis[4].metric("Resolved incidents", summary.get("incidents_resolved", 0))
-    by_severity = summary.get("incidents_by_severity", {})
-    kpis[5].metric("Critical / High", f"{by_severity.get('critical', 0)} / {by_severity.get('high', 0)}")
+    kpis[0].metric("Applications monitored", summary.get("applications_monitored", 0)) #
+    kpis[1].metric("Healthy applications", summary.get("applications_healthy", 0)) #
+    kpis[2].metric("Applications with anomalies", summary.get("applications_with_anomalies", 0)) #
+    kpis[3].metric("Active incidents", summary.get("incidents_active", 0)) #
+    kpis[4].metric("Resolved incidents", summary.get("incidents_resolved", 0)) #
+    by_severity = summary.get("incidents_by_severity", {}) #
+    kpis[5].metric("Critical / High", f"{by_severity.get('critical', 0)} / {by_severity.get('high', 0)}") #
 
     platform = st.columns(4)
     platform[0].metric("Collector", _health_badge(collectors.get("collector", {})))
@@ -209,15 +209,15 @@ def _render_analysis(analysis: dict | None) -> None:
 def _render_detail(item: dict) -> None:
     st.divider()
     header = st.columns([3, 1])
-    header[0].subheader(f"{item['app_id']} — {item['anomaly_type']}")
-    header[1].metric("Severity", str(item["severity"]).upper())
+    header[0].subheader(f"{item['app_id']} — {item['anomaly_type']}") #
+    header[1].metric("Severity", str(item["severity"]).upper()) # change
 
     meta = st.columns(5)
-    meta[0].metric("Status", item["status"])
-    meta[1].metric("Cluster", item.get("cluster_id") or "n/a")
-    meta[2].metric("Detector", item.get("detector_id") or "n/a")
-    meta[3].metric("Kafka partition", item.get("kafka_partition"))
-    meta[4].metric("Observations", item.get("observation_count"))
+    meta[0].metric("Status", item["status"]) #
+    meta[1].metric("Cluster", item.get("cluster_id") or "n/a") #
+    meta[2].metric("Detector", item.get("detector_id") or "n/a") #
+    meta[3].metric("Kafka partition", item.get("kafka_partition")) #
+    meta[4].metric("Observations", item.get("observation_count")) #
 
     st.caption(
         f"fingerprint={item.get('fingerprint')}  first_detected={item.get('first_detected')}  "
@@ -242,8 +242,42 @@ def _render_detail(item: dict) -> None:
                     st.error(str(exc))
 
 
+def _metric_row(metrics: dict) -> None:
+    cols = st.columns(4)
+    cols[0].metric("Impacted namespaces", metrics.get("impacted_namespaces", 0))
+    cols[1].metric("Open incidents", metrics.get("open_incidents", 0))
+    cols[2].metric("Criticals", metrics.get("criticals", 0))
+    cols[3].metric("Affected pods", metrics.get("affected_pods", 0))
+
+
+def _render_incident_metrics() -> None:
+    try:
+        data = api.incident_metrics()
+    except api.ApiError as exc:
+        st.error(f"Could not load incident metrics: {exc}")
+        return
+
+    st.subheader("Incident Workbench")
+    st.caption("Currently open incidents across all monitored namespaces.")
+    _metric_row(data.get("workbench", {}))
+
+    st.subheader("Daily Report")
+    st.caption("Incidents active in the last 24 hours.")
+    _metric_row(data.get("daily", {}))
+
+    st.subheader("Weekly Report")
+    st.caption("Incidents active in the last 7 days.")
+    _metric_row(data.get("weekly", {}))
+
+    st.subheader("Monthly Report")
+    st.caption("Incidents active in the last 30 days.")
+    _metric_row(data.get("monthly", {}))
+
+
 def _render_content() -> None:
     _render_overview()
+    st.divider()
+    _render_incident_metrics()
     st.divider()
     _render_incidents()
 

@@ -23,6 +23,7 @@ from database.repository import (
     counts_by,
     detector_activity,
     get_incident,
+    incident_metrics_report,
     list_incidents,
     summary,
 )
@@ -86,6 +87,12 @@ def get_summary() -> dict[str, Any]:
     data["incidents_by_status"] = counts_by("status")
     data["incidents_by_anomaly"] = counts_by("anomaly_type")
     return data
+
+
+@app.get("/metrics/incidents")
+def incident_metrics() -> dict[str, Any]:
+    """Incident workbench plus daily/weekly/monthly report counts."""
+    return incident_metrics_report()
 
 
 @app.get("/incidents")

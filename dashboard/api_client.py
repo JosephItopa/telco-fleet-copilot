@@ -37,6 +37,11 @@ def summary() -> dict[str, Any]:
     return _get("/summary")
 
 
+def incident_metrics() -> dict[str, Any]:
+    """Incident workbench + daily/weekly/monthly report counts."""
+    return _get("/metrics/incidents")
+
+
 def current_anomalies(severity: str | None = None) -> list[dict[str, Any]]:
     params = {"limit": 500}
     if severity:
